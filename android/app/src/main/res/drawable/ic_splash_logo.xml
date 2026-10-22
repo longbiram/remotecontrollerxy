@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Rounded squircle background -->
+    <path
+        android:fillColor="#1E2235"
+        android:pathData="M24,12 L72,12 A12,12 0 0,1 84,24 L84,72 A12,12 0 0,1 72,84 L24,84 A12,12 0 0,1 12,72 L12,24 A12,12 0 0,1 24,12 Z" />
+    <!-- Red gradient accent stripe -->
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M28,16 L68,16 A8,8 0 0,1 76,24 L76,32 L20,32 L20,24 A8,8 0 0,1 28,16 Z" />
+    <!-- Stylized Play Button in center -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,36 L64,48 L40,60 Z" />
+    <!-- Bottom glow line -->
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M32,74 L64,74 A2,2 0 0,1 66,76 L66,76 A2,2 0 0,1 64,78 L32,78 A2,2 0 0,1 30,76 L30,76 A2,2 0 0,1 32,74 Z" />
+</vector>
