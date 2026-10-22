@@ -35,12 +35,13 @@ class ApiService {
 
   /// Fetch full catalog or filtered items from PHP backend
   /// Transmits encrypted HMAC signatures and headers
-  /// Falls back to MockContent if backend is unreachable
+  /// Falls back to MockContent if backend is unreachable and fallbackToMock is true
   static Future<List<ContentItem>> fetchCatalog({
     ContentType? type,
     bool? trending,
     bool? promoted,
     String? search,
+    bool fallbackToMock = true,
   }) async {
     const endpoint = '/api/content.php';
     try {
@@ -73,6 +74,10 @@ class ApiService {
       }
     } catch (e) {
       debugPrint('ApiService.fetchCatalog warning: $e. Falling back to local catalog.');
+    }
+
+    if (!fallbackToMock) {
+      return const [];
     }
 
     // Fallback to local catalog if server is not running

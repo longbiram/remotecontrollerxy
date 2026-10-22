@@ -3,7 +3,6 @@ import '../models/content_item.dart';
 import '../theme/app_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/content_shelf.dart';
-import '../data/mock_content.dart';
 import '../services/api_service.dart';
 import 'player_screen.dart';
 import 'profile_screen.dart';
@@ -21,12 +20,25 @@ class DetailScreen extends StatefulWidget {
 class _DetailScreenState extends State<DetailScreen> {
   late ContentItem _item;
   int _selectedSeasonIndex = 0;
+  List<ContentItem> _apiCatalog = [];
 
   @override
   void initState() {
     super.initState();
     _item = widget.item;
     _refreshDetail();
+    if (widget.state == null || widget.state!.allContent.isEmpty) {
+      _loadCatalog();
+    }
+  }
+
+  Future<void> _loadCatalog() async {
+    final catalog = await ApiService.fetchCatalog(fallbackToMock: false);
+    if (catalog.isNotEmpty && mounted) {
+      setState(() {
+        _apiCatalog = catalog;
+      });
+    }
   }
 
   Future<void> _refreshDetail() async {
@@ -158,7 +170,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   List<ContentItem> _getMoreLikeThis(ContentItem currentItem) {
-    // Collect all catalog items from state or fallback to MockContent
+    // Collect catalog items from real sources (AppState or backend API)
     final allCandidates = <ContentItem>[];
     final seenIds = <String>{currentItem.id};
 
@@ -169,9 +181,11 @@ class _DetailScreenState extends State<DetailScreen> {
         }
       }
     }
-    for (final item in MockContent.allContent) {
-      if (seenIds.add(item.id)) {
-        allCandidates.add(item);
+    if (_apiCatalog.isNotEmpty) {
+      for (final item in _apiCatalog) {
+        if (seenIds.add(item.id)) {
+          allCandidates.add(item);
+        }
       }
     }
 
