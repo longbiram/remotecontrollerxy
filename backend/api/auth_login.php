@@ -85,7 +85,7 @@ try {
     }
 
     // Lookup user by email
-    $stmt = $pdo->prepare("SELECT id, name, email, password_hash, avatar, status, created_at FROM app_users WHERE email = :email LIMIT 1");
+    $stmt = $pdo->prepare("SELECT id, name, email, password_hash, avatar, status, token, created_at FROM app_users WHERE email = :email LIMIT 1");
     $stmt->execute(['email' => $email]);
     $user = $stmt->fetch();
 
@@ -115,8 +115,10 @@ try {
         ], 403);
     }
 
-    // Generate new session token and update last login
-    $token = bin2hex(random_bytes(32));
+    // Reuse existing valid token if present so multiple devices and reopens are not invalidated
+    $token = (!empty($user['token']) && strlen($user['token']) >= 16)
+        ? $user['token']
+        : bin2hex(random_bytes(32));
     $upStmt = $pdo->prepare("UPDATE app_users SET token = :token, last_login = NOW() WHERE id = :id");
     $upStmt->execute(['token' => $token, 'id' => $user['id']]);
 

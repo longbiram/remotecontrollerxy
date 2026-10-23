@@ -19,6 +19,7 @@ import 'package:pikashow_app/models/watch_progress.dart';
 import 'package:pikashow_app/screens/detail_screen.dart';
 import 'package:pikashow_app/screens/library_screen.dart';
 import 'package:pikashow_app/services/hls_parser_service.dart';
+import 'package:pikashow_app/services/auth_service.dart';
 import 'package:pikashow_app/widgets/content_shelf.dart';
 import 'package:pikashow_app/widgets/continue_watching_shelf.dart';
 import 'package:pikashow_app/models/app_update_info.dart';
@@ -708,6 +709,8 @@ variants/480p.m3u8
 
   testWidgets('LibraryScreen displays saved favourites reactively, allows quick card removal and undo', (WidgetTester tester) async {
     final state = AppState();
+    await state.toggleFavourite(state.latestMovies.first);
+    await state.toggleFavourite(state.latestMovies.last);
     expect(state.favouriteItems.isNotEmpty, isTrue);
     final initialCount = state.favouriteItems.length;
     final firstItem = state.favouriteItems.first;
@@ -842,5 +845,239 @@ variants/480p.m3u8
     final infoUpToDate = AppUpdateInfo.fromJson(noUpdatePayload, 2);
     expect(infoUpToDate.hasUpdate, isFalse);
   });
+
+  testWidgets('User session persists across app close / restart and routes to MainNavigation', (WidgetTester tester) async {
+    // 1. Simulate user logging in and session being saved to disk
+    final user = const AppUser(
+      id: 88,
+      name: 'Persistent User',
+      email: 'persistent@example.com',
+      token: 'persisted_prod_token_123',
+    );
+    await AuthService.saveUserSession(user, user.token);
+
+    // 2. Simulate fresh app launch (app was closed and reopened)
+    final freshAppState = AppState();
+    await freshAppState.initAuth();
+
+    expect(freshAppState.isAuthenticated, isTrue);
+    expect(freshAppState.currentUser?.email, 'persistent@example.com');
+
+    // 3. Mount SplashScreen with the fresh AppState
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SplashScreen(
+          state: freshAppState,
+          autoNavigate: false,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 4. Tap Skip
+    await tester.tap(find.text('Skip'));
+    await tester.pumpAndSettle();
+
+    // 5. User MUST land on MainNavigation, NOT LoginScreen
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Live TV'), findsAtLeastNWidgets(1));
+    expect(find.text('Sign In'), findsNothing);
+  });
+
+  testWidgets('Guest session persists across app close / restart and routes to MainNavigation', (WidgetTester tester) async {
+    // 1. Simulate user continuing as guest previously
+    await AuthService.setGuestMode(true);
+
+    // 2. Simulate fresh app launch
+    final freshAppState = AppState();
+    await freshAppState.initAuth();
+
+    expect(freshAppState.isAuthenticated, isTrue);
+    expect(freshAppState.isGuest, isTrue);
+
+    // 3. Mount SplashScreen with fresh AppState
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SplashScreen(
+          state: freshAppState,
+          autoNavigate: false,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 4. Tap Skip
+    await tester.tap(find.text('Skip'));
+    await tester.pumpAndSettle();
+
+    // 5. Guest MUST land on MainNavigation, NOT LoginScreen
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Live TV'), findsAtLeastNWidgets(1));
+    expect(find.text('Sign In'), findsNothing);
+  });
+
+  testWidgets('Continue watching persists across app restart and renders on HomeScreen', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+
+    // 1. First session: User logs in and watches a movie halfway
+    final user = const AppUser(
+      id: 99,
+      name: 'Movie Watcher',
+      email: 'watcher@example.com',
+      token: 'watcher_token_999',
+    );
+    await AuthService.saveUserSession(user, user.token);
+
+    final session1 = AppState();
+    await session1.initAuth();
+    await session1.initWatchProgress();
+
+    final testMovie = session1.latestMovies.first;
+    await session1.saveWatchProgress(
+      item: testMovie,
+      position: const Duration(seconds: 1500),
+      duration: const Duration(seconds: 3600),
+    );
+
+    expect(session1.continueWatching.length, equals(1));
+    expect(session1.getSavedPosition(testMovie.id), equals(const Duration(seconds: 1500)));
+
+    // 2. App closes completely and reopens (Session 2 cold start)
+    final session2 = AppState();
+    await session2.initAuth();
+    await session2.initWatchProgress();
+
+    expect(session2.isAuthenticated, isTrue);
+    expect(session2.currentUser?.id, equals(99));
+    expect(session2.continueWatching.length, equals(1));
+    expect(session2.continueWatching.first.contentId, equals(testMovie.id));
+    expect(session2.continueWatching.first.positionSeconds, equals(1500));
+    expect(session2.continueWatching.first.progressPercentage, closeTo(0.416, 0.01));
+
+    // 3. Render HomeScreen with session2 and verify shelf displays
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkTheme,
+        home: HomeScreen(
+          state: session2,
+          onOpenSearch: () {},
+          onOpenLiveTv: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ContinueWatchingShelf), findsOneWidget);
+    expect(find.text('Continue Watching'), findsOneWidget);
+    expect(find.text(testMovie.title), findsAtLeastNWidgets(1));
+    expect(find.text('41%'), findsOneWidget);
+  });
+
+  testWidgets('User-specific continue watching data is isolated between accounts', (WidgetTester tester) async {
+    // 1. User A logs in and saves progress for Movie 1
+    final userA = const AppUser(id: 101, name: 'User A', email: 'a@example.com', token: 'token_a');
+    await AuthService.saveUserSession(userA, userA.token);
+
+    final appA = AppState();
+    await appA.initAuth();
+    await appA.initWatchProgress();
+
+    final movieA = appA.latestMovies.first;
+    await appA.saveWatchProgress(
+      item: movieA,
+      position: const Duration(minutes: 20),
+      duration: const Duration(minutes: 100),
+    );
+    expect(appA.continueWatching.length, equals(1));
+    expect(appA.continueWatching.first.contentId, equals(movieA.id));
+
+    // 2. User A logs out
+    await appA.logout();
+    expect(appA.continueWatching.isEmpty, isTrue);
+
+    // 3. User B logs in (new user, fresh history)
+    final userB = const AppUser(id: 102, name: 'User B', email: 'b@example.com', token: 'token_b');
+    await AuthService.saveUserSession(userB, userB.token);
+
+    final appB = AppState();
+    await appB.initAuth();
+    await appB.initWatchProgress();
+
+    // User B should NOT see User A's continue watching items
+    expect(appB.continueWatching.isEmpty, isTrue);
+
+    // User B saves progress for Movie 2
+    final movieB = appB.latestMovies.last;
+    await appB.saveWatchProgress(
+      item: movieB,
+      position: const Duration(minutes: 45),
+      duration: const Duration(minutes: 90),
+    );
+    expect(appB.continueWatching.length, equals(1));
+    expect(appB.continueWatching.first.contentId, equals(movieB.id));
+
+    // 4. User A logs back in
+    await AuthService.saveUserSession(userA, userA.token);
+    final appAReturns = AppState();
+    await appAReturns.initAuth();
+    await appAReturns.initWatchProgress();
+
+    // User A's continue watching must have Movie A, NOT Movie B
+    expect(appAReturns.continueWatching.length, equals(1));
+    expect(appAReturns.continueWatching.first.contentId, equals(movieA.id));
+  });
+
+  testWidgets('Favourites and Watch History persist across app restarts and render in LibraryScreen', (WidgetTester tester) async {
+    // 1. User logs in
+    final user = const AppUser(id: 301, name: 'Library User', email: 'lib@example.com', token: 'token_301');
+    await AuthService.saveUserSession(user, user.token);
+
+    final app1 = AppState();
+    await app1.initAuth();
+
+    final testMovie = app1.latestMovies.first;
+    final testHistoryMovie = app1.latestMovies.last;
+
+    // Save one favorite and add one to watch history
+    await app1.toggleFavourite(testMovie);
+    await app1.addToHistory(testHistoryMovie);
+
+    expect(app1.isFavourite(testMovie.id), isTrue);
+    expect(app1.favouriteItems.length, equals(1));
+    expect(app1.watchHistory.length, equals(1));
+
+    // 2. Restart app (Session 2 cold start)
+    final app2 = AppState();
+    await app2.initAuth();
+
+    expect(app2.isFavourite(testMovie.id), isTrue);
+    expect(app2.favouriteItems.length, equals(1));
+    expect(app2.favouriteItems.first.id, equals(testMovie.id));
+    expect(app2.watchHistory.length, equals(1));
+    expect(app2.watchHistory.first.id, equals(testHistoryMovie.id));
+
+    // 3. Render LibraryScreen with app2
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkTheme,
+        home: LibraryScreen(state: app2),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify Favourites tab shows 1 item
+    expect(find.text('Favourites (1)'), findsOneWidget);
+    expect(find.text(testMovie.title), findsAtLeastNWidgets(1));
+
+    // Switch to History tab
+    await tester.tap(find.text('History (1)'));
+    await tester.pumpAndSettle();
+
+    // Verify History tab displays the watched movie
+    expect(find.text(testHistoryMovie.title), findsAtLeastNWidgets(1));
+  });
 }
+
 

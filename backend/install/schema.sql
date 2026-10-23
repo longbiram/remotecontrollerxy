@@ -148,4 +148,45 @@ CREATE TABLE IF NOT EXISTS `home_categories` (
   INDEX `idx_is_enabled` (`is_enabled`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 10. User Watch Progress (Continue Watching) Table
+CREATE TABLE IF NOT EXISTS `watch_progress` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `episode_id` VARCHAR(64) NULL DEFAULT NULL,
+  `position_seconds` INT NOT NULL DEFAULT 0,
+  `duration_seconds` INT NOT NULL DEFAULT 0,
+  `item_json` LONGTEXT NULL COMMENT 'Cached JSON of ContentItem',
+  `episode_json` LONGTEXT NULL COMMENT 'Cached JSON of Episode',
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_content_ep` (`user_id`, `content_id`, `episode_id`),
+  INDEX `idx_user_progress` (`user_id`, `updated_at`),
+  CONSTRAINT `fk_watch_progress_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 11. User Saved Favourites Table
+CREATE TABLE IF NOT EXISTS `user_favourites` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `item_json` LONGTEXT NULL COMMENT 'Cached JSON of ContentItem',
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_favourite` (`user_id`, `content_id`),
+  INDEX `idx_user_fav_created` (`user_id`, `created_at`),
+  CONSTRAINT `fk_user_fav_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 12. User Watch History Table
+CREATE TABLE IF NOT EXISTS `user_history` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `item_json` LONGTEXT NULL COMMENT 'Cached JSON of ContentItem',
+  `watched_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_history` (`user_id`, `content_id`),
+  INDEX `idx_user_hist_watched` (`user_id`, `watched_at`),
+  CONSTRAINT `fk_user_hist_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
+

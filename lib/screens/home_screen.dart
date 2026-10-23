@@ -11,13 +11,13 @@ import 'category_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   final AppState state;
-  final VoidCallback onOpenSearch;
+  final VoidCallback? onOpenSearch;
   final VoidCallback onOpenLiveTv;
 
   const HomeScreen({
     super.key,
     required this.state,
-    required this.onOpenSearch,
+    this.onOpenSearch,
     required this.onOpenLiveTv,
   });
 
@@ -114,13 +114,6 @@ class HomeScreen extends StatelessWidget {
                     ],
                   ),
                   actions: [
-                    // Search Action
-                    IconButton(
-                      icon: const Icon(Icons.search_rounded, color: Colors.white, size: 24),
-                      tooltip: 'Search Movies & TV',
-                      onPressed: onOpenSearch,
-                    ),
-
                     // Chromecast Action (interactive with live connection indicator)
                     IconButton(
                       icon: Stack(
@@ -147,6 +140,109 @@ class HomeScreen extends StatelessWidget {
                           : 'Cast to Smart TV / Chromecast',
                       onPressed: () => CastSheet.show(context, state),
                     ),
+
+                    // Subscription Plan Badge — shown for logged-in users only.
+                    // Updates reactively once refreshSubscription() completes.
+                    if (state.hasActiveUser) ...[
+                      if (state.hasActiveSubscription)
+                        // ── Active plan pill ──────────────────────────────────
+                        GestureDetector(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ProfileScreen(state: state),
+                            ),
+                          ),
+                          child: Container(
+                            margin: const EdgeInsets.only(left: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 9,
+                              vertical: 5,
+                            ),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFFFFB800), Color(0xFFFF6D00)],
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFFFFB800).withValues(alpha: 0.45),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.workspace_premium_rounded,
+                                  size: 13,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  state.currentSubscription?.planName
+                                          .split(' ')
+                                          .first ??
+                                      'VIP',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      else
+                        // ── Upgrade nudge pill ────────────────────────────────
+                        GestureDetector(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ProfileScreen(state: state),
+                            ),
+                          ),
+                          child: Container(
+                            margin: const EdgeInsets.only(left: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 9,
+                              vertical: 5,
+                            ),
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: AppTheme.primary.withValues(alpha: 0.7),
+                                width: 1.2,
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                              color: AppTheme.primary.withValues(alpha: 0.12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.star_rounded,
+                                  size: 12,
+                                  color: AppTheme.primary.withValues(alpha: 0.9),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Go VIP',
+                                  style: TextStyle(
+                                    color: AppTheme.primary.withValues(alpha: 0.9),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
 
                     // Profile Action (next to Chromecast icon)
                     GestureDetector(

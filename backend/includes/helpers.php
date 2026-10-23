@@ -198,6 +198,20 @@ function ensureDatabaseTables(PDO $pdo, bool $force = false): void {
             INDEX `idx_status` (`status`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
 
+        // Ensure token, avatar, and last_login columns exist if table predated these fields
+        $checkColToken = $pdo->query("SHOW COLUMNS FROM `app_users` LIKE 'token'");
+        if (!$checkColToken->fetch()) {
+            $pdo->exec("ALTER TABLE `app_users` ADD COLUMN `token` VARCHAR(255) NULL AFTER `status`, ADD INDEX `idx_token` (`token`)");
+        }
+        $checkColAvatar = $pdo->query("SHOW COLUMNS FROM `app_users` LIKE 'avatar'");
+        if (!$checkColAvatar->fetch()) {
+            $pdo->exec("ALTER TABLE `app_users` ADD COLUMN `avatar` TEXT NULL AFTER `password_hash`");
+        }
+        $checkColLogin = $pdo->query("SHOW COLUMNS FROM `app_users` LIKE 'last_login'");
+        if (!$checkColLogin->fetch()) {
+            $pdo->exec("ALTER TABLE `app_users` ADD COLUMN `last_login` DATETIME NULL AFTER `token`");
+        }
+
         // 2. is_premium column on content_items
         $checkCol = $pdo->query("SHOW COLUMNS FROM `content_items` LIKE 'is_premium'");
         if (!$checkCol->fetch()) {
@@ -374,8 +388,46 @@ function ensureDatabaseTables(PDO $pdo, bool $force = false): void {
             }
         }
 
+        // 6. watch_progress table (User Continue Watching state)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `watch_progress` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `user_id` INT NOT NULL,
+            `content_id` VARCHAR(64) NOT NULL,
+            `episode_id` VARCHAR(64) NULL DEFAULT NULL,
+            `position_seconds` INT NOT NULL DEFAULT 0,
+            `duration_seconds` INT NOT NULL DEFAULT 0,
+            `item_json` LONGTEXT NULL,
+            `episode_json` LONGTEXT NULL,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY `uniq_user_content_ep` (`user_id`, `content_id`, `episode_id`),
+            INDEX `idx_user_progress` (`user_id`, `updated_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+        // 7. user_favourites table
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `user_favourites` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `user_id` INT NOT NULL,
+            `content_id` VARCHAR(64) NOT NULL,
+            `item_json` LONGTEXT NULL,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY `uniq_user_favourite` (`user_id`, `content_id`),
+            INDEX `idx_user_fav_created` (`user_id`, `created_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+        // 8. user_history table
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `user_history` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `user_id` INT NOT NULL,
+            `content_id` VARCHAR(64) NOT NULL,
+            `item_json` LONGTEXT NULL,
+            `watched_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY `uniq_user_history` (`user_id`, `content_id`),
+            INDEX `idx_user_hist_watched` (`user_id`, `watched_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
     } catch (Exception $e) {
         error_log("ensureDatabaseTables error: " . $e->getMessage());
     }
 }
+
 

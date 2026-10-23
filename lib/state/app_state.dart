@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,13 +13,15 @@ import '../data/mock_content.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/subscription_service.dart';
+import '../services/watch_progress_service.dart';
+import '../services/library_service.dart';
 
 class AppState extends ChangeNotifier {
   ContentType? _selectedCategory;
   static const String _kFavouritesKey = 'pikashow_saved_favourites';
   static const String _kHistoryKey = 'pikashow_watch_history';
 
-  final Set<String> _favouriteIds = {'prom_01', 'series_01'};
+  final Set<String> _favouriteIds = {};
   final Map<String, ContentItem> _favouritesMap = {};
   final List<ContentItem> _watchHistory = [];
   String _searchQuery = '';
@@ -34,6 +37,7 @@ class AppState extends ChangeNotifier {
   AppUser? _currentUser;
   bool _isGuest = false;
   bool _authInitialized = false;
+  Future<void>? _initAuthFuture;
 
   // Subscription State
   UserSubscription? _currentSubscription;
@@ -41,18 +45,21 @@ class AppState extends ChangeNotifier {
   List<SubscriptionPlan> _plans = List.from(SubscriptionService.defaultMockPlans);
 
   AppState() {
+    _initDefaults();
+    // Start restoring session from local storage immediately on creation
     initAuth();
-    initWatchProgress();
-    initFavourites();
-    initHistory();
     refreshCatalog();
-    refreshSubscription();
+  }
+
+  void _initDefaults() {
+    // No artificial mock seeding — user starts clean and data is loaded from backend/storage
   }
 
   ContentType? get selectedCategory => _selectedCategory;
   Set<String> get favouriteIds => Set.unmodifiable(_favouriteIds);
   List<ContentItem> get watchHistory => List.unmodifiable(_watchHistory);
   List<WatchProgress> get continueWatching => List.unmodifiable(_continueWatching);
+
   String get searchQuery => _searchQuery;
   CastDevice? get connectedCastDevice => _connectedCastDevice;
   bool get isCasting => _connectedCastDevice != null;
@@ -82,22 +89,70 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Load persisted user session on startup
-  Future<void> initAuth() async {
+  /// Restore a user session from storage or external auth check
+  void restoreUserSession(AppUser user) {
+    _currentUser = user;
+    _isGuest = false;
+    _authInitialized = true;
+    notifyListeners();
+  }
+
+  /// Load persisted user session on startup (idempotent, returns shared Future)
+  Future<void> initAuth() {
+    _initAuthFuture ??= _doInitAuth();
+    return _initAuthFuture!;
+  }
+
+  Future<void> _doInitAuth() async {
     try {
       final user = await AuthService.getStoredUser();
       final isGuest = await AuthService.isGuestSession();
       if (!_authInitialized || _currentUser == null) {
         _currentUser = user;
-        _isGuest = isGuest;
+        _isGuest = (user == null) && isGuest;
       }
       if (user != null) {
-        await refreshSubscription();
+        unawaited(AuthService.setGuestMode(false));
       }
-    } catch (_) {
+      _authInitialized = true;
+      notifyListeners();
+
+      // Ensure continue watching, favourites, and history are loaded for this session
+      await initWatchProgress(force: true);
+      await initFavourites(force: true);
+      await initHistory(force: true);
+
+      // If user session is active, verify with backend & sync in background
+      if (user != null && user.token != null && user.token!.isNotEmpty) {
+        unawaited(_syncUserWithBackend(user.token!));
+      } else if (_isGuest) {
+        unawaited(refreshSubscription());
+      }
+    } catch (e) {
+      debugPrint('AppState.initAuth error: $e');
     } finally {
       _authInitialized = true;
       notifyListeners();
+    }
+  }
+
+  Future<void> _syncUserWithBackend(String token) async {
+    try {
+      final verifiedUser = await AuthService.verifySession(token);
+      if (verifiedUser != null) {
+        _currentUser = verifiedUser;
+        notifyListeners();
+      }
+
+      // Fetch and merge watch progress, favourites, and history from backend
+      await syncWatchProgressWithBackend();
+      await syncFavouritesWithBackend();
+      await syncHistoryWithBackend();
+
+      // Refresh subscription plans & active subscription
+      await refreshSubscription();
+    } catch (e) {
+      debugPrint('_syncUserWithBackend error: $e');
     }
   }
 
@@ -108,6 +163,17 @@ class AppState extends ChangeNotifier {
       _currentUser = result.user;
       _isGuest = false;
       notifyListeners();
+
+      // Immediately load user's progress, favourites, & history and sync with backend
+      await initWatchProgress(force: true);
+      await initFavourites(force: true);
+      await initHistory(force: true);
+      unawaited(syncWatchProgressWithBackend());
+      unawaited(syncFavouritesWithBackend());
+      unawaited(syncHistoryWithBackend());
+
+      // Fetch subscription so header badge shows correct plan right after login
+      await refreshSubscription();
     }
     return result;
   }
@@ -119,6 +185,9 @@ class AppState extends ChangeNotifier {
       _currentUser = result.user;
       _isGuest = false;
       notifyListeners();
+      await initWatchProgress(force: true);
+      await initFavourites(force: true);
+      await initHistory(force: true);
     }
     return result;
   }
@@ -130,15 +199,32 @@ class AppState extends ChangeNotifier {
     _isGuest = false;
     _currentSubscription = null;
     _hasActiveSubscription = false;
+    _continueWatching.clear();
+    _favouritesMap.clear();
+    _favouriteIds.clear();
+    _watchHistory.clear();
     notifyListeners();
+    // Reload guest / default progress if any
+    await initWatchProgress(force: true);
+    await initFavourites(force: true);
+    await initHistory(force: true);
   }
 
   /// Continue without logging in
   void continueAsGuest() {
     AuthService.setGuestMode(true);
     _isGuest = true;
+    _currentUser = null;
+    _continueWatching.clear();
+    _favouritesMap.clear();
+    _favouriteIds.clear();
+    _watchHistory.clear();
     notifyListeners();
+    initWatchProgress(force: true);
+    initFavourites(force: true);
+    initHistory(force: true);
   }
+
 
   /// Refresh subscription status and plans
   Future<void> refreshSubscription() async {
@@ -373,38 +459,64 @@ class AppState extends ChangeNotifier {
 
   bool isFavourite(String id) => _favouriteIds.contains(id);
 
+  String get _userFavouritesKey => _currentUser != null
+      ? '${_kFavouritesKey}_user_${_currentUser!.id}'
+      : _kFavouritesKey;
+
+  String get _userHistoryKey => _currentUser != null
+      ? '${_kHistoryKey}_user_${_currentUser!.id}'
+      : _kHistoryKey;
+
+  Future<void>? _initFavouritesFuture;
+  Future<void>? _initHistoryFuture;
+
   /// Load persisted saved favourites from SharedPreferences
-  Future<void> initFavourites() async {
+  Future<void> initFavourites({bool force = false}) {
+    if (force || _initFavouritesFuture == null) {
+      _initFavouritesFuture = _doInitFavourites();
+    }
+    return _initFavouritesFuture!;
+  }
+
+  Future<void> _doInitFavourites() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawList = prefs.getStringList(_kFavouritesKey);
-      if (rawList != null) {
-        _favouritesMap.clear();
-        _favouriteIds.clear();
+      List<String>? rawList;
+
+      if (_currentUser != null) {
+        if (prefs.containsKey(_userFavouritesKey)) {
+          rawList = prefs.getStringList(_userFavouritesKey);
+        } else {
+          rawList = prefs.getStringList(_kFavouritesKey);
+          if (rawList != null && rawList.isNotEmpty) {
+            await prefs.setStringList(_userFavouritesKey, rawList);
+          }
+        }
+      } else {
+        rawList = prefs.getStringList(_kFavouritesKey);
+      }
+
+      final Map<String, ContentItem> loadedMap = {};
+      final Set<String> loadedIds = {};
+
+      if (rawList != null && rawList.isNotEmpty) {
         for (final itemStr in rawList) {
           try {
             final json = jsonDecode(itemStr) as Map<String, dynamic>;
             final item = ContentItem.fromJson(json);
-            _favouritesMap[item.id] = item;
-            _favouriteIds.add(item.id);
+            loadedMap[item.id] = item;
+            loadedIds.add(item.id);
           } catch (_) {}
         }
-      } else {
-        // First run defaults: populate with mock content
-        final defaultIds = ['prom_01', 'series_01'];
-        for (final id in defaultIds) {
-          final found = MockContent.allContent.where((i) => i.id == id).firstOrNull;
-          if (found != null) {
-            _favouritesMap[found.id] = found;
-            _favouriteIds.add(found.id);
-          }
-        }
-        await _persistFavourites();
       }
+
+      _favouritesMap.clear();
+      _favouriteIds.clear();
+      _favouritesMap.addAll(loadedMap);
+      _favouriteIds.addAll(loadedIds);
+      notifyListeners();
     } catch (e) {
       debugPrint('initFavourites error: $e');
-    } finally {
-      notifyListeners();
     }
   }
 
@@ -412,14 +524,46 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       final list = favouriteItems.map((item) => jsonEncode(item.toJson())).toList();
-      await prefs.setStringList(_kFavouritesKey, list);
+      if (_currentUser != null) {
+        await prefs.setStringList(_userFavouritesKey, list);
+      } else {
+        await prefs.setStringList(_kFavouritesKey, list);
+      }
     } catch (e) {
       debugPrint('_persistFavourites error: $e');
     }
   }
 
+  /// Sync favourites with backend
+  Future<void> syncFavouritesWithBackend() async {
+    final token = _currentUser?.token;
+    if (token == null || token.isEmpty || token == 'guest_token') return;
+
+    try {
+      final serverItems = await LibraryService.fetchFavourites(token);
+      if (serverItems.isNotEmpty) {
+        for (final s in serverItems) {
+          _favouritesMap[s.id] = s;
+          _favouriteIds.add(s.id);
+        }
+        notifyListeners();
+        await _persistFavourites();
+      } else if (_favouritesMap.isNotEmpty) {
+        for (final item in _favouritesMap.values) {
+          unawaited(LibraryService.saveFavourite(token: token, item: item));
+        }
+      }
+    } catch (e) {
+      debugPrint('syncFavouritesWithBackend error: $e');
+    }
+  }
+
   /// Toggle favourite status of an item (can accept either ContentItem or String id)
   Future<void> toggleFavourite(dynamic itemOrId) async {
+    if (_initFavouritesFuture != null) {
+      await _initFavouritesFuture;
+    }
+
     ContentItem? item;
     String id;
 
@@ -429,24 +573,33 @@ class AppState extends ChangeNotifier {
     } else if (itemOrId is String) {
       id = itemOrId;
       item = _favouritesMap[id] ??
-          _catalogItems.where((i) => i.id == id).firstOrNull ??
-          MockContent.allContent.where((i) => i.id == id).firstOrNull;
+          _catalogItems.where((i) => i.id == id).firstOrNull;
     } else {
       return;
     }
 
+    final token = _currentUser?.token;
+    final hasUserToken = token != null && token.isNotEmpty && token != 'guest_token';
+
     if (_favouriteIds.contains(id)) {
       _favouriteIds.remove(id);
       _favouritesMap.remove(id);
+      notifyListeners();
+      await _persistFavourites();
+      if (hasUserToken) {
+        unawaited(LibraryService.removeFavourite(token: token, contentId: id));
+      }
     } else {
       _favouriteIds.add(id);
       if (item != null) {
         _favouritesMap[id] = item;
       }
+      notifyListeners();
+      await _persistFavourites();
+      if (hasUserToken && item != null) {
+        unawaited(LibraryService.saveFavourite(token: token, item: item));
+      }
     }
-
-    notifyListeners();
-    await _persistFavourites();
   }
 
   /// Remove single item from favourites
@@ -455,6 +608,10 @@ class AppState extends ChangeNotifier {
       _favouritesMap.remove(id);
       notifyListeners();
       await _persistFavourites();
+      final token = _currentUser?.token;
+      if (token != null && token.isNotEmpty && token != 'guest_token') {
+        unawaited(LibraryService.removeFavourite(token: token, contentId: id));
+      }
     }
   }
 
@@ -464,25 +621,50 @@ class AppState extends ChangeNotifier {
     _favouritesMap.clear();
     notifyListeners();
     await _persistFavourites();
+    final token = _currentUser?.token;
+    if (token != null && token.isNotEmpty && token != 'guest_token') {
+      unawaited(LibraryService.clearAllFavourites(token));
+    }
   }
 
   /// Load persisted watch history
-  Future<void> initHistory() async {
+  Future<void> initHistory({bool force = false}) {
+    if (force || _initHistoryFuture == null) {
+      _initHistoryFuture = _doInitHistory();
+    }
+    return _initHistoryFuture!;
+  }
+
+  Future<void> _doInitHistory() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawList = prefs.getStringList(_kHistoryKey);
+      List<String>? rawList;
+
+      if (_currentUser != null) {
+        if (prefs.containsKey(_userHistoryKey)) {
+          rawList = prefs.getStringList(_userHistoryKey);
+        } else {
+          rawList = prefs.getStringList(_kHistoryKey);
+          if (rawList != null && rawList.isNotEmpty) {
+            await prefs.setStringList(_userHistoryKey, rawList);
+          }
+        }
+      } else {
+        rawList = prefs.getStringList(_kHistoryKey);
+      }
+
+      final List<ContentItem> loaded = [];
       if (rawList != null && rawList.isNotEmpty) {
-        final List<ContentItem> loaded = [];
         for (final itemStr in rawList) {
           try {
             final json = jsonDecode(itemStr) as Map<String, dynamic>;
             loaded.add(ContentItem.fromJson(json));
           } catch (_) {}
         }
-        _watchHistory.clear();
-        _watchHistory.addAll(loaded);
-        notifyListeners();
       }
+      _watchHistory.clear();
+      _watchHistory.addAll(loaded);
+      notifyListeners();
     } catch (e) {
       debugPrint('initHistory error: $e');
     }
@@ -492,48 +674,201 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       final list = _watchHistory.map((item) => jsonEncode(item.toJson())).toList();
-      await prefs.setStringList(_kHistoryKey, list);
+      if (_currentUser != null) {
+        await prefs.setStringList(_userHistoryKey, list);
+      } else {
+        await prefs.setStringList(_kHistoryKey, list);
+      }
     } catch (e) {
       debugPrint('_persistHistory error: $e');
     }
   }
 
-  void addToHistory(ContentItem item) {
+  /// Sync watch history with backend
+  Future<void> syncHistoryWithBackend() async {
+    final token = _currentUser?.token;
+    if (token == null || token.isEmpty || token == 'guest_token') return;
+
+    try {
+      final serverItems = await LibraryService.fetchHistory(token);
+      if (serverItems.isNotEmpty) {
+        final Map<String, ContentItem> merged = {};
+        for (final s in serverItems) {
+          merged[s.id] = s;
+        }
+        for (final l in _watchHistory) {
+          if (!merged.containsKey(l.id)) {
+            merged[l.id] = l;
+          }
+        }
+        _watchHistory.clear();
+        _watchHistory.addAll(merged.values.take(40));
+        notifyListeners();
+        await _persistHistory();
+      } else if (_watchHistory.isNotEmpty) {
+        for (final item in _watchHistory.take(15)) {
+          unawaited(LibraryService.recordHistory(token: token, item: item));
+        }
+      }
+    } catch (e) {
+      debugPrint('syncHistoryWithBackend error: $e');
+    }
+  }
+
+  Future<void> addToHistory(ContentItem item) async {
+    if (_initHistoryFuture != null) {
+      await _initHistoryFuture;
+    }
+
     _watchHistory.removeWhere((i) => i.id == item.id);
     _watchHistory.insert(0, item);
-    if (_watchHistory.length > 30) {
+    if (_watchHistory.length > 40) {
       _watchHistory.removeLast();
     }
     notifyListeners();
     _persistHistory();
+
+    final token = _currentUser?.token;
+    if (token != null && token.isNotEmpty && token != 'guest_token') {
+      unawaited(LibraryService.recordHistory(token: token, item: item));
+    }
   }
 
   Future<void> clearWatchHistory() async {
     _watchHistory.clear();
     notifyListeners();
     await _persistHistory();
+
+    final token = _currentUser?.token;
+    if (token != null && token.isNotEmpty && token != 'guest_token') {
+      unawaited(LibraryService.clearHistory(token));
+    }
   }
 
   static const String _kContinueWatchingKey = 'pikashow_continue_watching';
+  Future<void>? _initWatchProgressFuture;
+
+  String get _userWatchProgressKey => _currentUser != null
+      ? '${_kContinueWatchingKey}_user_${_currentUser!.id}'
+      : _kContinueWatchingKey;
 
   /// Load persisted continue watching items from SharedPreferences
-  Future<void> initWatchProgress() async {
+  Future<void> initWatchProgress({bool force = false}) {
+    if (force || _initWatchProgressFuture == null) {
+      _initWatchProgressFuture = _doInitWatchProgress();
+    }
+    return _initWatchProgressFuture!;
+  }
+
+  Future<void> _doInitWatchProgress() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawList = prefs.getStringList(_kContinueWatchingKey);
+      List<String>? rawList;
+
+      if (_currentUser != null) {
+        if (prefs.containsKey(_userWatchProgressKey)) {
+          rawList = prefs.getStringList(_userWatchProgressKey);
+        } else {
+          // One-time legacy migration from un-scoped key if user-specific key not yet set
+          rawList = prefs.getStringList(_kContinueWatchingKey);
+          if (rawList != null && rawList.isNotEmpty) {
+            await prefs.setStringList(_userWatchProgressKey, rawList);
+          }
+        }
+      } else {
+        rawList = prefs.getStringList(_kContinueWatchingKey);
+      }
+
+      final List<WatchProgress> loaded = [];
       if (rawList != null && rawList.isNotEmpty) {
-        final List<WatchProgress> loaded = [];
         for (final itemStr in rawList) {
           try {
             final json = jsonDecode(itemStr) as Map<String, dynamic>;
             loaded.add(WatchProgress.fromJson(json));
-          } catch (_) {}
+          } catch (e) {
+            debugPrint('Failed to parse WatchProgress from storage: $e');
+          }
         }
-        _continueWatching = loaded;
-        notifyListeners();
       }
+
+      // If in-memory items were added, merge them so recent items are not dropped
+      if (_continueWatching.isNotEmpty) {
+        final Map<String, WatchProgress> merged = {};
+        for (final p in loaded) {
+          final key = '${p.contentId}_${p.episode?.id ?? "main"}';
+          merged[key] = p;
+        }
+        for (final p in _continueWatching) {
+          final key = '${p.contentId}_${p.episode?.id ?? "main"}';
+          merged[key] = p;
+        }
+        final sorted = merged.values.toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        _continueWatching = sorted.take(25).toList();
+      } else {
+        _continueWatching = loaded;
+      }
+      notifyListeners();
     } catch (e) {
       debugPrint('initWatchProgress error: $e');
+    }
+  }
+
+  /// Synchronize continue watching items with backend
+  Future<void> syncWatchProgressWithBackend() async {
+    final token = _currentUser?.token;
+    if (token == null || token.isEmpty || token == 'guest_token') return;
+
+    try {
+      final serverItems = await WatchProgressService.fetchProgress(token);
+      if (serverItems.isNotEmpty) {
+        // Merge server items with local items (taking most recently updated)
+        final Map<String, WatchProgress> merged = {};
+
+        // Start with server items
+        for (final s in serverItems) {
+          final key = '${s.contentId}_${s.episode?.id ?? "main"}';
+          merged[key] = s;
+        }
+
+        // Merge with local items if local has newer timestamp
+        for (final l in _continueWatching) {
+          final key = '${l.contentId}_${l.episode?.id ?? "main"}';
+          if (!merged.containsKey(key) || l.updatedAt.isAfter(merged[key]!.updatedAt)) {
+            merged[key] = l;
+          }
+        }
+
+        final sorted = merged.values.toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+        _continueWatching = sorted.take(25).toList();
+        notifyListeners();
+
+        // Persist merged list locally
+        await _persistContinueWatching();
+      } else if (_continueWatching.isNotEmpty) {
+        // Server has no records yet, sync our local progress up to the server
+        for (final item in _continueWatching.take(10)) {
+          unawaited(WatchProgressService.saveProgress(token: token, progress: item));
+        }
+      }
+    } catch (e) {
+      debugPrint('syncWatchProgressWithBackend error: $e');
+    }
+  }
+
+  Future<void> _persistContinueWatching() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final strList = _continueWatching.map((p) => jsonEncode(p.toJson())).toList();
+      if (_currentUser != null) {
+        await prefs.setStringList(_userWatchProgressKey, strList);
+      } else {
+        await prefs.setStringList(_kContinueWatchingKey, strList);
+      }
+    } catch (e) {
+      debugPrint('_persistContinueWatching error: $e');
     }
   }
 
@@ -570,6 +905,10 @@ class AppState extends ChangeNotifier {
     // Ignore tiny accidental clicks under 5 seconds
     if (position.inSeconds < 5) return;
 
+    if (_initWatchProgressFuture != null) {
+      await _initWatchProgressFuture;
+    }
+
     final progress = WatchProgress(
       contentId: item.id,
       item: item,
@@ -597,17 +936,17 @@ class AppState extends ChangeNotifier {
     }
 
     // Also add to watch history
-    addToHistory(item);
+    await addToHistory(item);
 
     notifyListeners();
 
-    // Persist to local storage
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final strList = _continueWatching.map((p) => jsonEncode(p.toJson())).toList();
-      await prefs.setStringList(_kContinueWatchingKey, strList);
-    } catch (e) {
-      debugPrint('saveWatchProgress error: $e');
+    // Persist to local storage immediately
+    await _persistContinueWatching();
+
+    // Sync to backend if user is logged in
+    final token = _currentUser?.token;
+    if (token != null && token.isNotEmpty && token != 'guest_token') {
+      unawaited(WatchProgressService.saveProgress(token: token, progress: progress));
     }
   }
 
@@ -618,12 +957,18 @@ class AppState extends ChangeNotifier {
     );
     notifyListeners();
 
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final strList = _continueWatching.map((p) => jsonEncode(p.toJson())).toList();
-      await prefs.setStringList(_kContinueWatchingKey, strList);
-    } catch (_) {}
+    await _persistContinueWatching();
+
+    final token = _currentUser?.token;
+    if (token != null && token.isNotEmpty && token != 'guest_token') {
+      unawaited(WatchProgressService.removeProgress(
+        token: token,
+        contentId: contentId,
+        episodeId: episodeId,
+      ));
+    }
   }
+
 
   List<ContentItem> get promotedItems =>
       _catalogItems.where((item) => item.isPromoted).toList();
@@ -674,8 +1019,7 @@ class AppState extends ChangeNotifier {
 
     for (final id in _favouriteIds) {
       if (added.add(id)) {
-        final item = _catalogItems.where((i) => i.id == id).firstOrNull ??
-            MockContent.allContent.where((i) => i.id == id).firstOrNull;
+        final item = _catalogItems.where((i) => i.id == id).firstOrNull;
         if (item != null) {
           list.add(item);
           _favouritesMap[id] = item;

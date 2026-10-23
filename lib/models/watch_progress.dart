@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'content_item.dart';
 
 class WatchProgress {
@@ -72,16 +73,63 @@ class WatchProgress {
     'updatedAt': updatedAt.toIso8601String(),
   };
 
-  factory WatchProgress.fromJson(Map<String, dynamic> json) {
+  factory WatchProgress.fromJson(Map<String, dynamic> json, {ContentItem? fallbackItem}) {
+    final contentId = (json['contentId'] ?? json['content_id'])?.toString() ?? '';
+
+    // Parse item safely (handles Map, JSON String, or fallback)
+    ContentItem item;
+    final rawItem = json['item'] ?? json['item_json'];
+    if (rawItem is Map) {
+      try {
+        item = ContentItem.fromJson(Map<String, dynamic>.from(rawItem));
+      } catch (_) {
+        item = fallbackItem ?? ContentItem.empty(id: contentId);
+      }
+    } else if (rawItem is String && rawItem.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawItem);
+        if (decoded is Map) {
+          item = ContentItem.fromJson(Map<String, dynamic>.from(decoded));
+        } else {
+          item = fallbackItem ?? ContentItem.empty(id: contentId);
+        }
+      } catch (_) {
+        item = fallbackItem ?? ContentItem.empty(id: contentId);
+      }
+    } else if (fallbackItem != null) {
+      item = fallbackItem;
+    } else {
+      item = ContentItem.empty(id: contentId);
+    }
+
+    // Parse episode safely (handles Map, JSON String, or null)
+    Episode? episode;
+    final rawEpisode = json['episode'] ?? json['episode_json'];
+    if (rawEpisode is Map) {
+      try {
+        episode = Episode.fromJson(Map<String, dynamic>.from(rawEpisode));
+      } catch (_) {}
+    } else if (rawEpisode is String && rawEpisode.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawEpisode);
+        if (decoded is Map) {
+          episode = Episode.fromJson(Map<String, dynamic>.from(decoded));
+        }
+      } catch (_) {}
+    }
+
+    final pos = ((json['positionSeconds'] ?? json['position_seconds']) as num?)?.toInt() ?? 0;
+    final dur = ((json['durationSeconds'] ?? json['duration_seconds']) as num?)?.toInt() ?? 0;
+    final updatedStr = (json['updatedAt'] ?? json['updated_at']) as String? ?? '';
+
     return WatchProgress(
-      contentId: json['contentId'] as String? ?? '',
-      item: ContentItem.fromJson(json['item'] as Map<String, dynamic>),
-      episode: json['episode'] != null
-          ? Episode.fromJson(json['episode'] as Map<String, dynamic>)
-          : null,
-      positionSeconds: (json['positionSeconds'] as num?)?.toInt() ?? 0,
-      durationSeconds: (json['durationSeconds'] as num?)?.toInt() ?? 0,
-      updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? '') ?? DateTime.now(),
+      contentId: contentId,
+      item: item,
+      episode: episode,
+      positionSeconds: pos,
+      durationSeconds: dur,
+      updatedAt: DateTime.tryParse(updatedStr) ?? DateTime.now(),
     );
   }
 }
+

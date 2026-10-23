@@ -25,8 +25,15 @@ class AppUser {
       } catch (_) {}
     }
 
+    int parsedId = 0;
+    if (json['id'] is num) {
+      parsedId = (json['id'] as num).toInt();
+    } else if (json['id'] is String) {
+      parsedId = int.tryParse(json['id'] as String) ?? 0;
+    }
+
     return AppUser(
-      id: (json['id'] as num?)?.toInt() ?? 0,
+      id: parsedId,
       name: json['name'] as String? ?? 'User',
       email: json['email'] as String? ?? '',
       avatar: json['avatar'] as String?,

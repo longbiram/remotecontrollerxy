@@ -1,9 +1,12 @@
+import 'dart:convert';
+
 enum ContentType {
   bollywood,
   hollywood,
   series,
   liveTv,
 }
+
 
 extension ContentTypeExtension on ContentType {
   String get displayName {
@@ -41,13 +44,13 @@ class Episode {
 
   factory Episode.fromJson(Map<String, dynamic> json) {
     return Episode(
-      id: json['id'] as String? ?? '',
-      episodeNumber: (json['episodeNumber'] as num?)?.toInt() ?? 1,
+      id: json['id']?.toString() ?? '',
+      episodeNumber: ((json['episodeNumber'] ?? json['episode_number']) as num?)?.toInt() ?? 1,
       title: json['title'] as String? ?? '',
-      duration: json['duration'] as String? ?? '',
+      duration: json['duration']?.toString() ?? '',
       description: json['description'] as String? ?? '',
       thumbnail: json['thumbnail'] as String? ?? '',
-      streamUrl: json['streamUrl'] as String? ?? '',
+      streamUrl: (json['streamUrl'] ?? json['stream_url']) as String? ?? '',
     );
   }
 
@@ -76,16 +79,31 @@ class Season {
   });
 
   factory Season.fromJson(Map<String, dynamic> json) {
-    final epList = (json['episodes'] as List<dynamic>?)
-            ?.map((e) => Episode.fromJson(e as Map<String, dynamic>))
-            .toList() ??
-        const [];
+    List<Episode> epList = const [];
+    final rawEps = json['episodes'];
+    if (rawEps is List) {
+      epList = rawEps
+          .whereType<Map>()
+          .map((e) => Episode.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    } else if (rawEps is String && rawEps.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawEps);
+        if (decoded is List) {
+          epList = decoded
+              .whereType<Map>()
+              .map((e) => Episode.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+      } catch (_) {}
+    }
     return Season(
-      seasonNumber: (json['seasonNumber'] as num?)?.toInt() ?? 1,
+      seasonNumber: ((json['seasonNumber'] ?? json['season_number']) as num?)?.toInt() ?? 1,
       title: json['title'] as String? ?? '',
       episodes: epList,
     );
   }
+
 
   Map<String, dynamic> toJson() {
     return {
@@ -141,22 +159,73 @@ class ContentItem {
     this.createdAt,
   });
 
+  /// Factory for a safe placeholder item when only an ID or partial data is known
+  factory ContentItem.empty({required String id, String title = 'Unknown Title'}) {
+    return ContentItem(
+      id: id,
+      title: title,
+      type: ContentType.bollywood,
+      posterUrl: '',
+      bannerUrl: '',
+      rating: 0.0,
+      year: '',
+      duration: '',
+      synopsis: '',
+      genres: const [],
+      languages: const [],
+      availableQualities: const [],
+      seasons: const [],
+      streamUrl: '',
+    );
+  }
+
   factory ContentItem.fromJson(Map<String, dynamic> json) {
-    final rawType = json['type'] as String? ?? 'bollywood';
+    final rawType = (json['type'] as String? ?? 'bollywood').toLowerCase();
     final parsedType = ContentType.values.firstWhere(
-      (t) => t.name.toLowerCase() == rawType.toLowerCase(),
+      (t) => t.name.toLowerCase() == rawType,
       orElse: () => ContentType.bollywood,
     );
 
-    final seasonList = (json['seasons'] as List<dynamic>?)
-            ?.map((s) => Season.fromJson(s as Map<String, dynamic>))
-            .toList() ??
-        const [];
+    List<Season> seasonList = const [];
+    final rawSeasons = json['seasons'];
+    if (rawSeasons is List) {
+      seasonList = rawSeasons
+          .whereType<Map>()
+          .map((s) => Season.fromJson(Map<String, dynamic>.from(s)))
+          .toList();
+    } else if (rawSeasons is String && rawSeasons.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawSeasons);
+        if (decoded is List) {
+          seasonList = decoded
+              .whereType<Map>()
+              .map((s) => Season.fromJson(Map<String, dynamic>.from(s)))
+              .toList();
+        }
+      } catch (_) {}
+    }
 
-    final isPrem = json['isPremium'] as bool? ??
-        (json['is_premium'] == 1 ||
-            json['is_premium'] == '1' ||
-            json['is_premium'] == true);
+    final isPrem = json['isPremium'] == true ||
+        json['is_premium'] == 1 ||
+        json['is_premium'] == '1' ||
+        json['is_premium'] == true;
+
+    List<String> parseStringList(dynamic raw) {
+      if (raw == null) return const [];
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is List) {
+            return decoded.map((e) => e.toString()).toList();
+          }
+        } catch (_) {}
+        return [raw];
+      }
+      return const [];
+    }
 
     final rawCreatedAt = json['createdAt'] ?? json['created_at'];
     DateTime? parsedCreatedAt;
@@ -165,37 +234,31 @@ class ContentItem {
     }
 
     return ContentItem(
-      id: json['id'] as String? ?? '',
+      id: json['id']?.toString() ?? '',
       title: json['title'] as String? ?? '',
       type: parsedType,
-      posterUrl: json['posterUrl'] as String? ?? '',
-      bannerUrl: json['bannerUrl'] as String? ?? '',
-      rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
-      year: json['year'] as String? ?? '',
-      duration: json['duration'] as String? ?? '',
+      posterUrl: (json['posterUrl'] ?? json['poster_url']) as String? ?? '',
+      bannerUrl: (json['bannerUrl'] ?? json['banner_url']) as String? ?? '',
+      rating: ((json['rating'] as num?)?.toDouble()) ??
+          (double.tryParse(json['rating']?.toString() ?? '') ?? 0.0),
+      year: json['year']?.toString() ?? '',
+      duration: json['duration']?.toString() ?? '',
       synopsis: json['synopsis'] as String? ?? '',
-      genres: (json['genres'] as List<dynamic>?)
-              ?.map((e) => e.toString())
-              .toList() ??
-          const [],
-      languages: (json['languages'] as List<dynamic>?)
-              ?.map((e) => e.toString())
-              .toList() ??
-          const [],
-      availableQualities: (json['availableQualities'] as List<dynamic>?)
-              ?.map((e) => e.toString())
-              .toList() ??
-          const [],
+      genres: parseStringList(json['genres']),
+      languages: parseStringList(json['languages']),
+      availableQualities: parseStringList(json['availableQualities'] ?? json['available_qualities']),
       seasons: seasonList,
-      streamUrl: json['streamUrl'] as String? ?? '',
-      isPromoted: json['isPromoted'] as bool? ?? false,
-      isTrending: json['isTrending'] as bool? ?? false,
+      streamUrl: (json['streamUrl'] ?? json['stream_url']) as String? ?? '',
+      isPromoted: json['isPromoted'] == true || json['is_promoted'] == 1 || json['is_promoted'] == '1',
+      isTrending: json['isTrending'] == true || json['is_trending'] == 1 || json['is_trending'] == '1',
       isPremium: isPrem,
-      channelCategory: json['channelCategory'] as String? ?? '',
-      views: (json['views'] as num?)?.toInt() ?? 0,
+      channelCategory: (json['channelCategory'] ?? json['channel_category']) as String? ?? '',
+      views: ((json['views'] as num?)?.toInt()) ??
+          (int.tryParse(json['views']?.toString() ?? '') ?? 0),
       createdAt: parsedCreatedAt,
     );
   }
+
 
   Map<String, dynamic> toJson() {
     return {

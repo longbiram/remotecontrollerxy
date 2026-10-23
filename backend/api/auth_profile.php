@@ -31,6 +31,9 @@ if (empty($token) && preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
 if (empty($token) && !empty($_GET['token'])) {
     $token = trim($_GET['token']);
 }
+if (empty($token) && !empty($_REQUEST['token'])) {
+    $token = trim($_REQUEST['token']);
+}
 
 if (empty($token)) {
     jsonResponse([
@@ -59,6 +62,12 @@ try {
             'message' => 'Account suspended.',
         ], 403);
     }
+
+    // Refresh last_login timestamp on verified session
+    try {
+        $upLast = $pdo->prepare("UPDATE app_users SET last_login = NOW() WHERE id = :id");
+        $upLast->execute(['id' => $user['id']]);
+    } catch (_) {}
 
     // If POST, handle profile update (e.g. name or avatar update)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {

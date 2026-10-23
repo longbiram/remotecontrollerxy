@@ -9,10 +9,11 @@ import 'screens/search_screen.dart';
 import 'screens/library_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/login_screen.dart';
+import 'services/auth_service.dart';
 import 'services/app_update_service.dart';
 import 'widgets/app_update_dialog.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -22,12 +23,27 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const PikaShowApp());
+
+  final appState = AppState();
+  // Restore persisted session, continue watching, favourites, and history from disk on cold start
+  await appState.initAuth();
+  await appState.initWatchProgress();
+  await appState.initFavourites();
+  await appState.initHistory();
+
+  runApp(PikaShowApp(appState: appState));
 }
+
 
 class PikaShowApp extends StatefulWidget {
   final bool showSplash;
-  const PikaShowApp({super.key, this.showSplash = true});
+  final AppState? appState;
+
+  const PikaShowApp({
+    super.key,
+    this.showSplash = true,
+    this.appState,
+  });
 
   @override
   State<PikaShowApp> createState() => _PikaShowAppState();
@@ -36,26 +52,91 @@ class PikaShowApp extends StatefulWidget {
 final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
 
 class _PikaShowAppState extends State<PikaShowApp> {
-  final AppState _appState = AppState();
+  late final AppState _appState;
+
+  @override
+  void initState() {
+    super.initState();
+    _appState = widget.appState ?? AppState();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: _appState,
-      builder: (context, _) {
-        return MaterialApp(
-          title: 'PikaShow',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.darkTheme,
-          navigatorObservers: [routeObserver],
-          home: widget.showSplash
-              ? SplashScreen(state: _appState)
-              : (_appState.hasActiveUser
-                  ? MainNavigation(state: _appState)
-                  : LoginScreen(state: _appState)),
-        );
-      },
+    // MaterialApp is built ONCE — no ListenableBuilder here.
+    // Auth-based routing is handled inside AuthGate/SplashScreen so that
+    // subsequent notifyListeners() calls (e.g. subscription refresh) do NOT
+    // accidentally reset the root home widget and drop the user back to login.
+    return MaterialApp(
+      title: 'PikaShow',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.darkTheme,
+      navigatorObservers: [routeObserver],
+      home: widget.showSplash
+          ? SplashScreen(state: _appState)
+          : _AuthGate(appState: _appState),
     );
+  }
+}
+
+/// Decides the initial route after splash is skipped (test / deep-link cases).
+/// Listens to [AppState] only until auth is initialized, then stays put.
+class _AuthGate extends StatefulWidget {
+  final AppState appState;
+  const _AuthGate({required this.appState});
+
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  bool _routed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tryRoute();
+    widget.appState.addListener(_tryRoute);
+  }
+
+  Future<void> _tryRoute() async {
+    if (_routed || !widget.appState.authInitialized) return;
+    _routed = true;
+    widget.appState.removeListener(_tryRoute);
+
+    if (!widget.appState.isAuthenticated) {
+      final storedUser = await AuthService.getStoredUser();
+      if (storedUser != null) {
+        widget.appState.restoreUserSession(storedUser);
+      } else {
+        final isGuest = await AuthService.isGuestSession();
+        if (isGuest) {
+          widget.appState.continueAsGuest();
+        }
+      }
+    }
+
+    // After first frame so Navigator is ready
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final target = widget.appState.isAuthenticated
+          ? MainNavigation(state: widget.appState)
+          : LoginScreen(state: widget.appState);
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => target),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.appState.removeListener(_tryRoute);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Show a blank dark screen briefly while auth resolves
+    return const Scaffold(backgroundColor: Color(0xFF0A0D18));
   }
 }
 

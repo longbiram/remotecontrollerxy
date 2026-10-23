@@ -209,8 +209,69 @@ class SchemaManager {
   INDEX `idx_is_enabled` (`is_enabled`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
             ],
+            'watch_progress' => [
+                'name' => 'watch_progress',
+                'title' => 'Watch Progress & Continue Watching',
+                'category' => 'User State',
+                'description' => 'User playback positions, continue watching queue, and resume state.',
+                'dependencies' => ['app_users'],
+                'is_core' => true,
+                'sql' => "CREATE TABLE IF NOT EXISTS `watch_progress` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `episode_id` VARCHAR(64) NULL DEFAULT NULL,
+  `position_seconds` INT NOT NULL DEFAULT 0,
+  `duration_seconds` INT NOT NULL DEFAULT 0,
+  `item_json` LONGTEXT NULL,
+  `episode_json` LONGTEXT NULL,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_content_ep` (`user_id`, `content_id`, `episode_id`),
+  INDEX `idx_user_progress` (`user_id`, `updated_at`),
+  CONSTRAINT `fk_watch_progress_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+            ],
+
+            'user_favourites' => [
+                'name' => 'user_favourites',
+                'title' => 'User Saved Favourites',
+                'category' => 'User State',
+                'description' => 'User bookmarked and saved titles for quick access across devices.',
+                'dependencies' => ['app_users', 'content_items'],
+                'is_core' => true,
+                'sql' => "CREATE TABLE IF NOT EXISTS `user_favourites` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `item_json` LONGTEXT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_favourite` (`user_id`, `content_id`),
+  INDEX `idx_user_fav_created` (`user_id`, `created_at`),
+  CONSTRAINT `fk_user_fav_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+            ],
+
+            'user_history' => [
+                'name' => 'user_history',
+                'title' => 'User Watch History',
+                'category' => 'User State',
+                'description' => 'User playback watch history records and timestamps.',
+                'dependencies' => ['app_users', 'content_items'],
+                'is_core' => true,
+                'sql' => "CREATE TABLE IF NOT EXISTS `user_history` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `content_id` VARCHAR(64) NOT NULL,
+  `item_json` LONGTEXT NULL,
+  `watched_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_user_history` (`user_id`, `content_id`),
+  INDEX `idx_user_hist_watched` (`user_id`, `watched_at`),
+  CONSTRAINT `fk_user_hist_user` FOREIGN KEY (`user_id`) REFERENCES `app_users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+            ],
         ];
     }
+
 
     /**
      * Inspect a MySQL server and inspect whether a database exists,

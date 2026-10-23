@@ -20,6 +20,7 @@ class AuthResult {
 }
 
 class AuthService {
+  static const String _prefUserSessionJson = 'auth_user_session_json';
   static const String _prefUserIdKey = 'auth_user_id';
   static const String _prefUserNameKey = 'auth_user_name';
   static const String _prefUserEmailKey = 'auth_user_email';
@@ -27,21 +28,55 @@ class AuthService {
   static const String _prefUserTokenKey = 'auth_user_token';
   static const String _prefIsGuestKey = 'auth_is_guest';
 
-  /// Check if user has an active stored session
+  /// Check if user has an active stored session (reloads from disk for cold starts)
   static Future<AppUser?> getStoredUser() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final id = prefs.getInt(_prefUserIdKey);
+      try {
+        await prefs.reload();
+      } catch (_) {}
+
+      // 1. Check primary unified session JSON
+      final jsonStr = prefs.getString(_prefUserSessionJson);
+      if (jsonStr != null && jsonStr.trim().isNotEmpty) {
+        try {
+          final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+          final user = AppUser.fromJson(data);
+          if (user.email.trim().isNotEmpty) {
+            return user;
+          }
+        } catch (e) {
+          debugPrint('Error reading session JSON: $e');
+        }
+      }
+
+      // 2. Fallback to individual keys
+      final dynamic rawId = prefs.get(_prefUserIdKey);
+      int? id;
+      if (rawId is int) {
+        id = rawId;
+      } else if (rawId is String) {
+        id = int.tryParse(rawId);
+      } else if (rawId is num) {
+        id = rawId.toInt();
+      }
+
       final email = prefs.getString(_prefUserEmailKey);
-      final name = prefs.getString(_prefUserNameKey);
+      final rawName = prefs.getString(_prefUserNameKey);
       final avatar = prefs.getString(_prefUserAvatarKey);
       final token = prefs.getString(_prefUserTokenKey);
 
-      if (id != null && email != null && name != null) {
+      if (email != null && email.trim().isNotEmpty) {
+        final name = (rawName != null && rawName.trim().isNotEmpty)
+            ? rawName.trim()
+            : (email.split('@').first.isNotEmpty
+                ? email.split('@').first
+                : 'User');
+
         return AppUser(
-          id: id,
+          id: id ?? 1,
           name: name,
-          email: email,
+          email: email.trim(),
           avatar: avatar,
           token: token,
         );
@@ -56,28 +91,96 @@ class AuthService {
   static Future<bool> isGuestSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      try {
+        await prefs.reload();
+      } catch (_) {}
       return prefs.getBool(_prefIsGuestKey) ?? false;
     } catch (_) {
       return false;
     }
   }
 
-  /// Save user session into SharedPreferences
+  /// Verify active user token with backend profile API
+  /// Validates session on startup, refreshes profile data, or clears expired session.
+  static Future<AppUser?> verifySession(String token) async {
+    if (token.isEmpty || token == 'guest_token' || token == 'guest_session') {
+      return null;
+    }
+    // Offline tokens were issued locally — do not make remote call, retain local session
+    if (token.startsWith('offline_token_')) {
+      return await getStoredUser();
+    }
+
+    const endpoint = '/api/auth_profile.php';
+    try {
+      final uri = Uri.parse('${ApiConfig.baseUrl}$endpoint?token=$token');
+      final headers = {
+        ...ApiConfig.getSecureHeaders(endpoint),
+        'Authorization': 'Bearer $token',
+        'X-User-Token': token,
+      };
+
+      final response = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'success' && data['data']?['user'] != null) {
+          final userData = data['data']['user'] as Map<String, dynamic>;
+          final user = AppUser.fromJson(userData).copyWith(token: token);
+          // Persist the freshest profile details (name, avatar, status)
+          await saveUserSession(user, token);
+          return user;
+        }
+      } else if (response.statusCode == 403) {
+        final data = jsonDecode(response.body);
+        if (data['code'] == 'ACCOUNT_SUSPENDED' || data['message'] == 'Account suspended.') {
+          debugPrint('Account suspended on server: ${data['message']}');
+          await clearSession();
+          return null;
+        }
+      }
+    } catch (e) {
+      debugPrint('AuthService.verifySession warning: $e');
+    }
+    // Network offline or error: retain stored local session so auto-login always works
+    return await getStoredUser();
+  }
+
+  /// Save user session into SharedPreferences (writes both JSON and individual keys safely)
   static Future<void> saveUserSession(AppUser user, String? token) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_prefUserIdKey, user.id);
-      await prefs.setString(_prefUserNameKey, user.name);
-      await prefs.setString(_prefUserEmailKey, user.email);
-      if (user.avatar != null) {
-        await prefs.setString(_prefUserAvatarKey, user.avatar!);
+      final userToSave = user.copyWith(token: token ?? user.token);
+
+      // 1. Primary unified session JSON
+      try {
+        final sessionJson = jsonEncode(userToSave.toJson());
+        await prefs.setString(_prefUserSessionJson, sessionJson);
+      } catch (e) {
+        debugPrint('Error saving session JSON: $e');
+      }
+
+      // 2. Mark not guest
+      await prefs.setBool(_prefIsGuestKey, false);
+
+      // 3. Save individual fields safely without type collisions
+      try {
+        await prefs.remove(_prefUserIdKey);
+        await prefs.setInt(_prefUserIdKey, userToSave.id);
+      } catch (_) {}
+
+      await prefs.setString(_prefUserNameKey, userToSave.name);
+      await prefs.setString(_prefUserEmailKey, userToSave.email);
+      if (userToSave.avatar != null && userToSave.avatar!.isNotEmpty) {
+        await prefs.setString(_prefUserAvatarKey, userToSave.avatar!);
       } else {
         await prefs.remove(_prefUserAvatarKey);
       }
-      if (token != null) {
-        await prefs.setString(_prefUserTokenKey, token);
+      if (userToSave.token != null && userToSave.token!.isNotEmpty) {
+        await prefs.setString(_prefUserTokenKey, userToSave.token!);
       }
-      await prefs.setBool(_prefIsGuestKey, false);
     } catch (e) {
       debugPrint('Error saving user session: $e');
     }
@@ -95,6 +198,7 @@ class AuthService {
   static Future<void> clearSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_prefUserSessionJson);
       await prefs.remove(_prefUserIdKey);
       await prefs.remove(_prefUserNameKey);
       await prefs.remove(_prefUserEmailKey);
@@ -124,7 +228,7 @@ class AuthService {
 
       final response = await http
           .post(uri, headers: headers, body: body)
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
 
@@ -198,7 +302,7 @@ class AuthService {
 
       final response = await http
           .post(uri, headers: headers, body: body)
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 15));
 
       final data = jsonDecode(response.body);
 

@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../main.dart';
+import '../services/auth_service.dart';
 import 'login_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -144,7 +145,27 @@ class _SplashScreenState extends State<SplashScreen>
     }
   }
 
-  void _proceedToHome() {
+  Future<void> _proceedToHome() async {
+    if (!mounted || _navigated) return;
+
+    // Await auth readiness so we never misroute users or guests before storage is read
+    if (!widget.state.authInitialized) {
+      await widget.state.initAuth();
+    }
+
+    // Safety fallback: if not authenticated in state, do a direct check against disk storage
+    if (!widget.state.isAuthenticated) {
+      final storedUser = await AuthService.getStoredUser();
+      if (storedUser != null) {
+        widget.state.restoreUserSession(storedUser);
+      } else {
+        final isGuest = await AuthService.isGuestSession();
+        if (isGuest) {
+          widget.state.continueAsGuest();
+        }
+      }
+    }
+
     if (!mounted || _navigated) return;
     _navigated = true;
 
@@ -153,11 +174,19 @@ class _SplashScreenState extends State<SplashScreen>
       return;
     }
 
-    // Direct user to LoginScreen if not signed in, or MainNavigation if authenticated
-    final Widget targetPage = widget.state.hasActiveUser
+    // If an authenticated user is reopening the app, refresh their subscription
+    // status and sync continue watching from backend in background.
+    if (widget.state.hasActiveUser) {
+      widget.state.refreshSubscription();
+      widget.state.syncWatchProgressWithBackend();
+    }
+
+    // Direct user to MainNavigation if authenticated (user or guest), or LoginScreen if not
+    final Widget targetPage = widget.state.isAuthenticated
         ? MainNavigation(state: widget.state)
         : LoginScreen(state: widget.state);
 
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 600),
