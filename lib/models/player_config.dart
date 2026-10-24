@@ -42,6 +42,21 @@ class PlayerResolution {
       bitrate: '600 Kbps',
     ),
   ];
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlayerResolution &&
+          runtimeType == other.runtimeType &&
+          label == other.label &&
+          resolution == other.resolution &&
+          streamUrl == other.streamUrl;
+
+  @override
+  int get hashCode => label.hashCode ^ resolution.hashCode ^ (streamUrl?.hashCode ?? 0);
+
+  @override
+  String toString() => 'PlayerResolution($label, $resolution)';
 }
 
 class AudioTrack {
@@ -56,6 +71,20 @@ class AudioTrack {
     this.streamUrl,
     this.isDefault = false,
   });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AudioTrack &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          name == other.name;
+
+  @override
+  int get hashCode => code.hashCode ^ name.hashCode;
+
+  @override
+  String toString() => 'AudioTrack($code, $name)';
 
   static const List<AudioTrack> defaults = [
     AudioTrack(
@@ -90,6 +119,19 @@ class PlaybackSpeed {
   final String label;
 
   const PlaybackSpeed({required this.speed, required this.label});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlaybackSpeed &&
+          runtimeType == other.runtimeType &&
+          (speed - other.speed).abs() < 0.001;
+
+  @override
+  int get hashCode => speed.hashCode;
+
+  @override
+  String toString() => 'PlaybackSpeed($speed, $label)';
 
   static const List<PlaybackSpeed> defaults = [
     PlaybackSpeed(speed: 0.5, label: '0.5x (Slow)'),

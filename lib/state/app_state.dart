@@ -94,6 +94,7 @@ class AppState extends ChangeNotifier {
     _currentUser = user;
     _isGuest = false;
     _authInitialized = true;
+    unawaited(AuthService.saveUserSession(user, user.token));
     notifyListeners();
   }
 
@@ -107,12 +108,16 @@ class AppState extends ChangeNotifier {
     try {
       final user = await AuthService.getStoredUser();
       final isGuest = await AuthService.isGuestSession();
+      final hasSession = await AuthService.hasActiveSession();
+
       if (!_authInitialized || _currentUser == null) {
         _currentUser = user;
-        _isGuest = (user == null) && isGuest;
+        _isGuest = (user == null) && (isGuest || hasSession);
       }
       if (user != null) {
         unawaited(AuthService.setGuestMode(false));
+      } else if (_isGuest) {
+        unawaited(AuthService.setGuestMode(true));
       }
       _authInitialized = true;
       notifyListeners();
@@ -211,14 +216,16 @@ class AppState extends ChangeNotifier {
   }
 
   /// Continue without logging in
-  void continueAsGuest() {
+  void continueAsGuest({bool clearData = true}) {
     AuthService.setGuestMode(true);
     _isGuest = true;
     _currentUser = null;
-    _continueWatching.clear();
-    _favouritesMap.clear();
-    _favouriteIds.clear();
-    _watchHistory.clear();
+    if (clearData) {
+      _continueWatching.clear();
+      _favouritesMap.clear();
+      _favouriteIds.clear();
+      _watchHistory.clear();
+    }
     notifyListeners();
     initWatchProgress(force: true);
     initFavourites(force: true);

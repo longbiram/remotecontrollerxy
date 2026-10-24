@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../widgets/player_dialogs.dart';
 import '../widgets/cast_sheet.dart';
 import '../main.dart';
+import '../services/local_hls_server.dart';
 import 'profile_screen.dart';
 
 enum VideoAspectMode {
@@ -82,6 +83,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// because HLS variant URLs (EXT-X-STREAM-INF) are video-only and carry no
   /// audio. Only the master playlist knows how to combine video+audio tracks.
   String? _masterStreamUrl;
+  HlsStreamInfo? _hlsStreamInfo;
 
   @override
   void initState() {
@@ -260,6 +262,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     ).then((info) {
       if (mounted) {
         setState(() {
+          _hlsStreamInfo = info;
           _availableResolutions = info.resolutions;
           _availableAudioTracks = info.audioTracks;
           if (!_availableResolutions.any((r) => r.label == _selectedResolution.label)) {
@@ -502,156 +505,129 @@ class _PlayerScreenState extends State<PlayerScreen>
     return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
+  Future<void> _applyHlsConfiguration({
+    PlayerResolution? newResolution,
+    AudioTrack? newAudio,
+  }) async {
+    final res = newResolution ?? _selectedResolution;
+    final audio = newAudio ?? _selectedAudio;
+
+    final wasPlaying = _wasPlayingBeforeRouteCovered || _isPlaying || (_controller?.value.isPlaying ?? false);
+    final currentPos = _controller?.value.position ?? Duration.zero;
+
+    setState(() {
+      if (newResolution != null) _selectedResolution = newResolution;
+      if (newAudio != null) _selectedAudio = newAudio;
+    });
+
+    if (newResolution != null) {
+      _showFeedbackToast(
+        icon: Icons.high_quality_rounded,
+        message: 'Quality: ${res.label}',
+      );
+    } else if (newAudio != null) {
+      _showFeedbackToast(
+        icon: Icons.audiotrack_rounded,
+        message: 'Audio: ${audio.name}',
+      );
+    }
+
+    // If an HLS master manifest exists with multi-renditions/tracks, dynamically generate customized stream
+    if (_hlsStreamInfo != null &&
+        _hlsStreamInfo!.rawManifest.isNotEmpty &&
+        _hlsStreamInfo!.baseUri != null) {
+      final customManifest = HlsParserService.buildCustomPlaylist(
+        rawManifest: _hlsStreamInfo!.rawManifest,
+        baseUri: _hlsStreamInfo!.baseUri!,
+        selectedAudio: audio,
+        selectedResolution: res,
+      );
+
+      final localUrl = await LocalHlsServer.serveManifest(customManifest);
+      if (localUrl.isNotEmpty) {
+        try {
+          // 1. Initialize new controller in background while old controller holds current frame (prevents black screen)
+          final newController = VideoPlayerController.networkUrl(Uri.parse(localUrl));
+          await newController.initialize();
+          newController.addListener(_onControllerUpdate);
+          await newController.setPlaybackSpeed(_selectedSpeed.speed);
+          await newController.setVolume(_isMuted ? 0.0 : 1.0);
+          await newController.seekTo(currentPos);
+          if (wasPlaying) {
+            await newController.play();
+          }
+
+          // 2. Seamless hot-swap: active controller replaced atomically without blinking to black
+          final oldController = _controller;
+          _controller = newController;
+
+          if (mounted) {
+            setState(() {
+              _isInitialized = true;
+              _isInitializing = false;
+              _position = currentPos;
+              _isPlaying = wasPlaying;
+              _playerKey = UniqueKey();
+            });
+          }
+
+          // 3. Clean up old controller after new controller is active
+          if (oldController != null) {
+            oldController.removeListener(_onControllerUpdate);
+            unawaited(oldController.pause().then((_) => oldController.dispose()).catchError((_) {}));
+          }
+          return;
+        } catch (e) {
+          debugPrint('_applyHlsConfiguration error: $e');
+          final fallbackUrl = _masterStreamUrl ?? _activeStreamUrl;
+          try {
+            final fallbackController = VideoPlayerController.networkUrl(Uri.parse(fallbackUrl));
+            _controller = fallbackController;
+            await fallbackController.initialize();
+            fallbackController.addListener(_onControllerUpdate);
+            await fallbackController.seekTo(currentPos);
+            if (wasPlaying) await fallbackController.play();
+            if (mounted) {
+              setState(() {
+                _isInitialized = true;
+                _isInitializing = false;
+                _position = currentPos;
+                _isPlaying = wasPlaying;
+                _playerKey = UniqueKey();
+              });
+            }
+            return;
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Fallback: restore volume & ensure playback continues smoothly
+    if (_controller != null && _isInitialized) {
+      if (!_isMuted) {
+        _controller!.setVolume(1.0);
+      }
+      if (wasPlaying && !_controller!.value.isPlaying) {
+        _controller!.play();
+        setState(() => _isPlaying = true);
+      }
+    }
+  }
+
   Future<void> _changeResolution(PlayerResolution res) async {
     if (res.label == _selectedResolution.label &&
         res.streamUrl == _selectedResolution.streamUrl) {
       return;
     }
-
-    if (_controller == null || !_isInitialized) {
-      setState(() => _selectedResolution = res);
-      return;
-    }
-
-    // ALWAYS reinitialize from the master playlist URL, never from a variant
-    // stream URL. HLS EXT-X-STREAM-INF variant URLs are video-only segments —
-    // audio is in separate EXT-X-MEDIA groups tied to the master. Loading a
-    // variant URL directly drops all audio tracks (no sound bug).
-    // ExoPlayer's ABR engine handles adaptive quality from the master URL.
-    final masterUrl = _masterStreamUrl ?? _activeStreamUrl;
-
-    final currentPos = _controller!.value.position;
-    final wasPlaying = _controller!.value.isPlaying;
-
-    // ── Mark as switching BEFORE any async gap ───────────────────────────────
-    // This prevents Flutter from rendering VideoPlayer(disposedController)
-    // between the dispose() call and the new controller being ready, which
-    // caused the black-screen-with-audio bug.
-    setState(() {
-      _selectedResolution = res;
-      _isInitialized = false;
-      _isInitializing = true;
-    });
-
-    _showFeedbackToast(
-      icon: Icons.high_quality_rounded,
-      message: 'Quality: ${res.label}',
-    );
-
-    try {
-      final oldController = _controller!;
-      _controller = null;
-      oldController.removeListener(_onControllerUpdate);
-      await oldController.pause();
-      await oldController.dispose();
-
-      final newController = VideoPlayerController.networkUrl(Uri.parse(masterUrl));
-      _controller = newController;
-      await newController.initialize();
-      newController.addListener(_onControllerUpdate);
-      await newController.setPlaybackSpeed(_selectedSpeed.speed);
-      await newController.setVolume(_isMuted ? 0.0 : 1.0);
-      await newController.seekTo(currentPos);
-      if (wasPlaying) {
-        await newController.play();
-      }
-
-      if (mounted) {
-        setState(() {
-          _isInitialized = true;
-          _isInitializing = false;
-          _position = currentPos;
-          _isPlaying = wasPlaying;
-          _playerKey = UniqueKey();
-        });
-      }
-    } catch (e) {
-      debugPrint('_changeResolution error: $e');
-      if (mounted) {
-        setState(() {
-          _isInitializing = false;
-          _hasError = true;
-          _errorMessage = 'Failed to switch quality. Tap to retry.';
-        });
-      }
-    }
+    await _applyHlsConfiguration(newResolution: res);
   }
 
   Future<void> _changeAudioTrack(AudioTrack track) async {
     if (track.code == _selectedAudio.code &&
-        track.name == _selectedAudio.name &&
-        track.streamUrl == _selectedAudio.streamUrl) {
+        track.name == _selectedAudio.name) {
       return;
     }
-
-    if (_controller == null || !_isInitialized) {
-      setState(() => _selectedAudio = track);
-      return;
-    }
-
-    // Determine the URL to load for this audio track.
-    // For dedicated audio stream URLs use them directly.
-    // Otherwise always fall back to the MASTER playlist URL so ExoPlayer can
-    // combine video + audio tracks correctly. Using _activeStreamUrl could
-    // race with episode changes; _masterStreamUrl is captured once at init.
-    final targetUrl = (track.streamUrl != null && track.streamUrl!.isNotEmpty)
-        ? track.streamUrl!
-        : (_masterStreamUrl ?? _activeStreamUrl);
-
-    final currentPos = _controller!.value.position;
-    final wasPlaying = _controller!.value.isPlaying;
-
-    // ── Mark as switching BEFORE any async gap ───────────────────────────────
-    // Prevents VideoPlayer(disposedController) from rendering while the new
-    // controller is initializing, which caused the black-screen-with-audio bug.
-    setState(() {
-      _selectedAudio = track;
-      _isInitialized = false;
-      _isInitializing = true;
-    });
-
-    _showFeedbackToast(
-      icon: Icons.audiotrack_rounded,
-      message: 'Audio: ${track.name}',
-    );
-
-    try {
-      final oldController = _controller!;
-      _controller = null;
-      oldController.removeListener(_onControllerUpdate);
-      await oldController.pause();
-      await oldController.dispose();
-
-      final newController = VideoPlayerController.networkUrl(Uri.parse(targetUrl));
-      _controller = newController;
-      await newController.initialize();
-      newController.addListener(_onControllerUpdate);
-      await newController.setPlaybackSpeed(_selectedSpeed.speed);
-      await newController.setVolume(_isMuted ? 0.0 : 1.0);
-      await newController.seekTo(currentPos);
-      if (wasPlaying) {
-        await newController.play();
-      }
-
-      if (mounted) {
-        setState(() {
-          _isInitialized = true;
-          _isInitializing = false;
-          _position = currentPos;
-          _isPlaying = wasPlaying;
-          _playerKey = UniqueKey();
-        });
-      }
-    } catch (e) {
-      debugPrint('_changeAudioTrack error: $e');
-      if (mounted) {
-        setState(() {
-          _isInitializing = false;
-          _hasError = true;
-          _errorMessage = 'Failed to switch audio track. Tap to retry.';
-        });
-      }
-    }
+    await _applyHlsConfiguration(newAudio: track);
   }
 
   Widget _buildVideoSurface() {
@@ -1369,7 +1345,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   @override
   void dispose() {
-
+    unawaited(LocalHlsServer.stop());
     WidgetsBinding.instance.removeObserver(this);
     routeObserver.unsubscribe(this);
     _saveCurrentProgress();

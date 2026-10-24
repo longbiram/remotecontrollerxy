@@ -160,8 +160,9 @@ class _SplashScreenState extends State<SplashScreen>
         widget.state.restoreUserSession(storedUser);
       } else {
         final isGuest = await AuthService.isGuestSession();
-        if (isGuest) {
-          widget.state.continueAsGuest();
+        final hasSession = await AuthService.hasActiveSession();
+        if (isGuest || hasSession) {
+          widget.state.continueAsGuest(clearData: false);
         }
       }
     }

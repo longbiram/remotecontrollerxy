@@ -27,6 +27,7 @@ class AuthService {
   static const String _prefUserAvatarKey = 'auth_user_avatar';
   static const String _prefUserTokenKey = 'auth_user_token';
   static const String _prefIsGuestKey = 'auth_is_guest';
+  static const String _prefHasActiveSessionKey = 'auth_has_active_session';
 
   /// Check if user has an active stored session (reloads from disk for cold starts)
   static Future<AppUser?> getStoredUser() async {
@@ -42,7 +43,7 @@ class AuthService {
         try {
           final data = jsonDecode(jsonStr) as Map<String, dynamic>;
           final user = AppUser.fromJson(data);
-          if (user.email.trim().isNotEmpty) {
+          if (user.email.trim().isNotEmpty || user.name.trim().isNotEmpty) {
             return user;
           }
         } catch (e) {
@@ -66,17 +67,17 @@ class AuthService {
       final avatar = prefs.getString(_prefUserAvatarKey);
       final token = prefs.getString(_prefUserTokenKey);
 
-      if (email != null && email.trim().isNotEmpty) {
+      if ((email != null && email.trim().isNotEmpty) || (rawName != null && rawName.trim().isNotEmpty)) {
         final name = (rawName != null && rawName.trim().isNotEmpty)
             ? rawName.trim()
-            : (email.split('@').first.isNotEmpty
+            : (email != null && email.split('@').first.isNotEmpty
                 ? email.split('@').first
                 : 'User');
 
         return AppUser(
           id: id ?? 1,
           name: name,
-          email: email.trim(),
+          email: email?.trim() ?? '',
           avatar: avatar,
           token: token,
         );
@@ -95,6 +96,19 @@ class AuthService {
         await prefs.reload();
       } catch (_) {}
       return prefs.getBool(_prefIsGuestKey) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Check if user previously entered the app and did not sign out
+  static Future<bool> hasActiveSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      try {
+        await prefs.reload();
+      } catch (_) {}
+      return prefs.getBool(_prefHasActiveSessionKey) ?? false;
     } catch (_) {
       return false;
     }
@@ -162,8 +176,9 @@ class AuthService {
         debugPrint('Error saving session JSON: $e');
       }
 
-      // 2. Mark not guest
+      // 2. Mark not guest and mark active session
       await prefs.setBool(_prefIsGuestKey, false);
+      await prefs.setBool(_prefHasActiveSessionKey, true);
 
       // 3. Save individual fields safely without type collisions
       try {
@@ -191,6 +206,9 @@ class AuthService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_prefIsGuestKey, isGuest);
+      if (isGuest) {
+        await prefs.setBool(_prefHasActiveSessionKey, true);
+      }
     } catch (_) {}
   }
 
@@ -205,6 +223,8 @@ class AuthService {
       await prefs.remove(_prefUserAvatarKey);
       await prefs.remove(_prefUserTokenKey);
       await prefs.remove(_prefIsGuestKey);
+      await prefs.remove(_prefHasActiveSessionKey);
+      await prefs.setBool(_prefHasActiveSessionKey, false);
     } catch (e) {
       debugPrint('Error clearing session: $e');
     }

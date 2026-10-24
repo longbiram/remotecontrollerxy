@@ -6,10 +6,14 @@ import '../models/content_item.dart';
 class HlsStreamInfo {
   final List<PlayerResolution> resolutions;
   final List<AudioTrack> audioTracks;
+  final String rawManifest;
+  final Uri? baseUri;
 
   const HlsStreamInfo({
     required this.resolutions,
     required this.audioTracks,
+    this.rawManifest = '',
+    this.baseUri,
   });
 }
 
@@ -130,7 +134,128 @@ class HlsParserService {
     return HlsStreamInfo(
       resolutions: parsedResolutions,
       audioTracks: parsedAudioTracks,
+      rawManifest: content,
+      baseUri: baseUri,
     );
+  }
+
+  /// Generates a customized HLS master playlist with:
+  /// 1. Absolute URLs for all audio media groups and variant streams.
+  /// 2. The selected audio track marked as DEFAULT=YES and AUTOSELECT=YES.
+  /// 3. The selected resolution locked (or all variants included if Auto).
+  static String buildCustomPlaylist({
+    required String rawManifest,
+    required Uri baseUri,
+    AudioTrack? selectedAudio,
+    PlayerResolution? selectedResolution,
+  }) {
+    if (!rawManifest.contains('#EXTM3U')) return rawManifest;
+
+    final lines = rawManifest.split('\n');
+    final buffer = StringBuffer();
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i].trim();
+
+      // 1. Process #EXT-X-MEDIA:TYPE=AUDIO
+      if (line.startsWith('#EXT-X-MEDIA:') && line.contains('TYPE=AUDIO')) {
+        var processedLine = line;
+
+        // Resolve URI="..." to absolute URL
+        final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(processedLine);
+        if (uriMatch != null) {
+          final relUri = uriMatch.group(1)!;
+          if (!relUri.startsWith('http://') && !relUri.startsWith('https://')) {
+            final absUrl = baseUri.resolve(relUri).toString();
+            processedLine = processedLine.replaceAll('URI="$relUri"', 'URI="$absUrl"');
+          }
+        }
+
+        // Determine if this is the selected audio track
+        final nameMatch = RegExp(r'NAME="([^"]+)"').firstMatch(processedLine);
+        final langMatch = RegExp(r'LANGUAGE="([^"]+)"').firstMatch(processedLine);
+        final trackName = nameMatch?.group(1);
+        final trackLang = langMatch?.group(1);
+
+        bool isTarget = false;
+        if (selectedAudio != null) {
+          if (trackLang != null && trackLang.toLowerCase() == selectedAudio.code.toLowerCase()) {
+            isTarget = true;
+          } else if (trackName != null &&
+              selectedAudio.name.toLowerCase().contains(trackName.toLowerCase())) {
+            isTarget = true;
+          }
+        }
+
+        if (isTarget) {
+          processedLine = processedLine.replaceAll('DEFAULT=NO', 'DEFAULT=YES');
+          processedLine = processedLine.replaceAll('AUTOSELECT=NO', 'AUTOSELECT=YES');
+          if (!processedLine.contains('DEFAULT=')) {
+            processedLine += ',DEFAULT=YES';
+          }
+          if (!processedLine.contains('AUTOSELECT=')) {
+            processedLine += ',AUTOSELECT=YES';
+          }
+        } else if (selectedAudio != null) {
+          processedLine = processedLine.replaceAll('DEFAULT=YES', 'DEFAULT=NO');
+          processedLine = processedLine.replaceAll('AUTOSELECT=YES', 'AUTOSELECT=NO');
+        }
+
+        buffer.writeln(processedLine);
+        continue;
+      }
+
+      // 2. Process #EXT-X-STREAM-INF
+      if (line.startsWith('#EXT-X-STREAM-INF:')) {
+        // Find next non-empty, non-comment line containing the variant URI
+        String variantUri = '';
+        int variantIndex = -1;
+        for (int j = i + 1; j < lines.length; j++) {
+          final nextLine = lines[j].trim();
+          if (nextLine.isNotEmpty && !nextLine.startsWith('#')) {
+            variantUri = nextLine;
+            variantIndex = j;
+            break;
+          }
+        }
+
+        // Determine if this resolution variant should be included
+        bool includeVariant = true;
+        if (selectedResolution != null && !selectedResolution.isAuto) {
+          final resMatch = RegExp(r'RESOLUTION=(\d+x\d+)').firstMatch(line);
+          final resStr = resMatch?.group(1);
+          if (resStr != null && selectedResolution.resolution.contains(resStr)) {
+            includeVariant = true;
+          } else if (selectedResolution.streamUrl != null &&
+              variantUri.isNotEmpty &&
+              selectedResolution.streamUrl!.contains(variantUri)) {
+            includeVariant = true;
+          } else {
+            includeVariant = false;
+          }
+        }
+
+        if (includeVariant) {
+          buffer.writeln(line);
+          if (variantUri.isNotEmpty) {
+            final absVariantUrl = (!variantUri.startsWith('http://') && !variantUri.startsWith('https://'))
+                ? baseUri.resolve(variantUri).toString()
+                : variantUri;
+            buffer.writeln(absVariantUrl);
+          }
+        }
+
+        // Advance loop past the variant URI line if found
+        if (variantIndex != -1) {
+          i = variantIndex;
+        }
+        continue;
+      }
+
+      buffer.writeln(line);
+    }
+
+    return buffer.toString();
   }
 
   static PlayerResolution? _parseStreamInfLine(String tagLine, String rawUri, Uri baseUri) {

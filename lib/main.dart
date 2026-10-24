@@ -109,8 +109,9 @@ class _AuthGateState extends State<_AuthGate> {
         widget.appState.restoreUserSession(storedUser);
       } else {
         final isGuest = await AuthService.isGuestSession();
-        if (isGuest) {
-          widget.appState.continueAsGuest();
+        final hasSession = await AuthService.hasActiveSession();
+        if (isGuest || hasSession) {
+          widget.appState.continueAsGuest(clearData: false);
         }
       }
     }

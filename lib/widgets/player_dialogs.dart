@@ -3,28 +3,28 @@ import '../models/player_config.dart';
 import '../theme/app_theme.dart';
 
 class PlayerDialogs {
-  static void showResolutionSelector({
+  static Future<void> showResolutionSelector({
     required BuildContext context,
     required PlayerResolution selected,
     List<PlayerResolution>? resolutions,
     required ValueChanged<PlayerResolution> onSelected,
-  }) {
+  }) async {
     final list = (resolutions != null && resolutions.isNotEmpty)
         ? resolutions
         : PlayerResolution.defaults;
 
-    showModalBottomSheet(
+    final chosen = await showModalBottomSheet<PlayerResolution>(
       context: context,
       backgroundColor: AppTheme.surface,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.85,
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.85,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -101,8 +101,7 @@ class PlayerDialogs {
                         style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
                       ),
                       onTap: () {
-                        onSelected(res);
-                        Navigator.pop(context);
+                        Navigator.of(sheetContext).pop(res);
                       },
                     );
                   }),
@@ -113,30 +112,34 @@ class PlayerDialogs {
         );
       },
     );
+
+    if (chosen != null) {
+      onSelected(chosen);
+    }
   }
 
-  static void showAudioSelector({
+  static Future<void> showAudioSelector({
     required BuildContext context,
     required AudioTrack selected,
     List<AudioTrack>? tracks,
     required ValueChanged<AudioTrack> onSelected,
-  }) {
+  }) async {
     final list = (tracks != null && tracks.isNotEmpty)
         ? tracks
         : AudioTrack.defaults;
 
-    showModalBottomSheet(
+    final chosen = await showModalBottomSheet<AudioTrack>(
       context: context,
       backgroundColor: AppTheme.surface,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.85,
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.85,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -188,8 +191,7 @@ class PlayerDialogs {
                             )
                           : null,
                       onTap: () {
-                        onSelected(track);
-                        Navigator.pop(context);
+                        Navigator.of(sheetContext).pop(track);
                       },
                     );
                   }),
@@ -200,25 +202,29 @@ class PlayerDialogs {
         );
       },
     );
+
+    if (chosen != null) {
+      onSelected(chosen);
+    }
   }
 
-  static void showSpeedSelector({
+  static Future<void> showSpeedSelector({
     required BuildContext context,
     required PlaybackSpeed selected,
     required ValueChanged<PlaybackSpeed> onSelected,
-  }) {
-    showModalBottomSheet(
+  }) async {
+    final chosen = await showModalBottomSheet<PlaybackSpeed>(
       context: context,
       backgroundColor: AppTheme.surface,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) {
+      builder: (sheetContext) {
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.85,
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.85,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -263,8 +269,7 @@ class PlayerDialogs {
                         ),
                       ),
                       onTap: () {
-                        onSelected(speed);
-                        Navigator.pop(context);
+                        Navigator.of(sheetContext).pop(speed);
                       },
                     );
                   }),
@@ -275,5 +280,9 @@ class PlayerDialogs {
         );
       },
     );
+
+    if (chosen != null) {
+      onSelected(chosen);
+    }
   }
 }

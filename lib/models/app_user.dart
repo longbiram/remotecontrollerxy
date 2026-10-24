@@ -32,13 +32,20 @@ class AppUser {
       parsedId = int.tryParse(json['id'] as String) ?? 0;
     }
 
+    final avatarVal = json['avatar'];
+    final tokenVal = json['token'];
+
     return AppUser(
       id: parsedId,
-      name: json['name'] as String? ?? 'User',
-      email: json['email'] as String? ?? '',
-      avatar: json['avatar'] as String?,
-      token: json['token'] as String?,
-      status: json['status'] as String? ?? 'active',
+      name: json['name']?.toString() ?? 'User',
+      email: json['email']?.toString() ?? '',
+      avatar: (avatarVal != null && avatarVal != false && avatarVal.toString().isNotEmpty)
+          ? avatarVal.toString()
+          : null,
+      token: (tokenVal != null && tokenVal != false && tokenVal.toString().isNotEmpty)
+          ? tokenVal.toString()
+          : null,
+      status: json['status']?.toString() ?? 'active',
       createdAt: parsedDate,
     );
   }

@@ -23,6 +23,9 @@ import 'package:pikashow_app/services/auth_service.dart';
 import 'package:pikashow_app/widgets/content_shelf.dart';
 import 'package:pikashow_app/widgets/continue_watching_shelf.dart';
 import 'package:pikashow_app/models/app_update_info.dart';
+import 'package:pikashow_app/widgets/player_dialogs.dart';
+import 'package:pikashow_app/models/player_config.dart';
+import 'package:pikashow_app/services/local_hls_server.dart';
 
 void main() {
   setUp(() {
@@ -671,6 +674,89 @@ variants/480p.m3u8
     expect(info.audioTracks[2].name, equals('Tamil'));
   });
 
+  test('HlsParserService parses BunnyCDN shaka-packager master playlist properly', () {
+    const bunnyM3u8 = '''#EXTM3U
+## Generated with https://github.com/shaka-project/shaka-packager version v3.9.3-0a8ba4f-release
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_1/audio.m3u8",GROUP-ID="audio",LANGUAGE="hi",NAME="Hindi",DEFAULT=YES,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_2/audio.m3u8",GROUP-ID="audio",LANGUAGE="en",NAME="English",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_3/audio.m3u8",GROUP-ID="audio",LANGUAGE="ja",NAME="Japanese",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-STREAM-INF:BANDWIDTH=1202977,AVERAGE-BANDWIDTH=539980,CODECS="avc1.640015,mp4a.40.2",RESOLUTION=426x240,FRAME-RATE=23.981,VIDEO-RANGE=SDR,AUDIO="audio",CLOSED-CAPTIONS=NONE
+240p/video.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1518251,AVERAGE-BANDWIDTH=748074,CODECS="avc1.64001e,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=23.981,VIDEO-RANGE=SDR,AUDIO="audio",CLOSED-CAPTIONS=NONE
+360p/video.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2450300,AVERAGE-BANDWIDTH=996021,CODECS="avc1.64001e,mp4a.40.2",RESOLUTION=853x480,FRAME-RATE=23.981,VIDEO-RANGE=SDR,AUDIO="audio",CLOSED-CAPTIONS=NONE
+480p/video.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=4588354,AVERAGE-BANDWIDTH=1532424,CODECS="avc1.64001f,mp4a.40.2",RESOLUTION=1280x720,FRAME-RATE=23.981,VIDEO-RANGE=SDR,AUDIO="audio",CLOSED-CAPTIONS=NONE
+720p/video.m3u8
+''';
+
+    final baseUri = Uri.parse('https://vz-6d958ab0-306.b-cdn.net/31940f13-0917-4532-a64a-2e10fc1736d7/playlist.m3u8');
+    final dummyItem = MockContent.allContent.first;
+
+    final info = HlsParserService.parseManifestContent(
+      content: bunnyM3u8,
+      baseUri: baseUri,
+      item: dummyItem,
+      streamUrl: baseUri.toString(),
+    );
+
+    // Auto + 4 profiles (240p, 360p, 480p, 720p)
+    expect(info.resolutions.length, equals(5));
+    expect(info.resolutions[0].isAuto, isTrue);
+    expect(info.resolutions[4].label, equals('720p HD'));
+    expect(info.resolutions[4].streamUrl, equals('https://vz-6d958ab0-306.b-cdn.net/31940f13-0917-4532-a64a-2e10fc1736d7/720p/video.m3u8'));
+
+    // Audio tracks: Hindi (default), English, Japanese
+    expect(info.audioTracks.length, equals(3));
+    expect(info.audioTracks[0].name, equals('Hindi [Original]'));
+    expect(info.audioTracks[0].isDefault, isTrue);
+    expect(info.audioTracks[1].name, equals('English'));
+    expect(info.audioTracks[2].name, equals('Japanese'));
+  });
+
+  test('HlsParserService.buildCustomPlaylist and LocalHlsServer dynamically configure audio and resolution', () async {
+    const bunnyM3u8 = '''#EXTM3U
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_1/audio.m3u8",GROUP-ID="audio",LANGUAGE="hi",NAME="Hindi",DEFAULT=YES,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_2/audio.m3u8",GROUP-ID="audio",LANGUAGE="en",NAME="English",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio_3/audio.m3u8",GROUP-ID="audio",LANGUAGE="ja",NAME="Japanese",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="2"
+#EXT-X-STREAM-INF:BANDWIDTH=1202977,RESOLUTION=426x240,AUDIO="audio"
+240p/video.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=4588354,RESOLUTION=1280x720,AUDIO="audio"
+720p/video.m3u8
+''';
+
+    final baseUri = Uri.parse('https://vz-6d958ab0-306.b-cdn.net/31940f13-0917-4532-a64a-2e10fc1736d7/playlist.m3u8');
+    const targetAudio = AudioTrack(code: 'en', name: 'English');
+    const targetResolution = PlayerResolution(label: '720p HD', resolution: '1280x720', bitrate: '4.6 Mbps');
+
+    final customized = HlsParserService.buildCustomPlaylist(
+      rawManifest: bunnyM3u8,
+      baseUri: baseUri,
+      selectedAudio: targetAudio,
+      selectedResolution: targetResolution,
+    );
+
+    // English must be marked DEFAULT=YES
+    expect(customized, contains('LANGUAGE="en",NAME="English",DEFAULT=YES,AUTOSELECT=YES'));
+    // Hindi and Japanese must NOT be DEFAULT=YES
+    expect(customized, contains('LANGUAGE="hi",NAME="Hindi",DEFAULT=NO,AUTOSELECT=NO'));
+    expect(customized, contains('LANGUAGE="ja",NAME="Japanese",DEFAULT=NO,AUTOSELECT=NO'));
+    // Relative URIs must be converted to absolute URLs
+    expect(customized, contains('https://vz-6d958ab0-306.b-cdn.net/31940f13-0917-4532-a64a-2e10fc1736d7/audio_2/audio.m3u8'));
+    // Only 720p stream variant must be included, 240p must be filtered out
+    expect(customized, contains('1280x720'));
+    expect(customized, contains('https://vz-6d958ab0-306.b-cdn.net/31940f13-0917-4532-a64a-2e10fc1736d7/720p/video.m3u8'));
+    expect(customized, isNot(contains('426x240')));
+
+    // Test serving via LocalHlsServer
+    final localUrl = await LocalHlsServer.serveManifest(customized);
+    expect(localUrl.startsWith('http://127.0.0.1:'), isTrue);
+    expect(localUrl.endsWith('.m3u8'), isTrue);
+    await LocalHlsServer.stop();
+  });
+
   testWidgets('DetailScreen bookmark button toggles saved status, updates icon, and updates AppState', (WidgetTester tester) async {
     final state = AppState();
     final item = MockContent.allContent.firstWhere((i) => !state.isFavourite(i.id));
@@ -1077,6 +1163,133 @@ variants/480p.m3u8
 
     // Verify History tab displays the watched movie
     expect(find.text(testHistoryMovie.title), findsAtLeastNWidgets(1));
+  });
+
+  test('PlayerResolution, AudioTrack, and PlaybackSpeed equality and toString work correctly', () {
+    const res1 = PlayerResolution(label: '1080p Full HD', resolution: '1920x1080', bitrate: '5.2 Mbps');
+    const res2 = PlayerResolution(label: '1080p Full HD', resolution: '1920x1080', bitrate: '5.2 Mbps');
+    const res3 = PlayerResolution(label: '720p HD', resolution: '1280x720', bitrate: '2.8 Mbps');
+
+    expect(res1, equals(res2));
+    expect(res1.hashCode, equals(res2.hashCode));
+    expect(res1 == res3, isFalse);
+    expect(res1.toString(), contains('1080p Full HD'));
+
+    const track1 = AudioTrack(code: 'hin', name: 'Hindi [Original]');
+    const track2 = AudioTrack(code: 'hin', name: 'Hindi [Original]');
+    const track3 = AudioTrack(code: 'eng', name: 'English');
+
+    expect(track1, equals(track2));
+    expect(track1.hashCode, equals(track2.hashCode));
+    expect(track1 == track3, isFalse);
+    expect(track1.toString(), contains('Hindi'));
+
+    const speed1 = PlaybackSpeed(speed: 1.25, label: '1.25x');
+    const speed2 = PlaybackSpeed(speed: 1.25, label: '1.25x');
+    const speed3 = PlaybackSpeed(speed: 1.5, label: '1.5x');
+
+    expect(speed1, equals(speed2));
+    expect(speed1 == speed3, isFalse);
+  });
+
+  testWidgets('PlayerDialogs.showResolutionSelector dismisses modal and calls onSelected without popping parent screen', (WidgetTester tester) async {
+    PlayerResolution? selected;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkTheme,
+        home: Builder(
+          builder: (context) {
+            return Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () {
+                    PlayerDialogs.showResolutionSelector(
+                      context: context,
+                      selected: PlayerResolution.defaults[0],
+                      resolutions: PlayerResolution.defaults,
+                      onSelected: (res) {
+                        selected = res;
+                      },
+                    );
+                  },
+                  child: const Text('Open Quality Sheet'),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open Quality Sheet'));
+    await tester.pumpAndSettle();
+
+    // Verify modal sheet is open
+    expect(find.text('Video Quality & Adaptive Profile'), findsOneWidget);
+    expect(find.text('720p HD'), findsOneWidget);
+
+    // Tap 720p HD
+    await tester.tap(find.text('720p HD'));
+    await tester.pumpAndSettle();
+
+    // Modal sheet must be dismissed
+    expect(find.text('Video Quality & Adaptive Profile'), findsNothing);
+    // Parent screen must still be intact
+    expect(find.text('Open Quality Sheet'), findsOneWidget);
+    // onSelected must receive 720p HD
+    expect(selected, isNotNull);
+    expect(selected!.resolution, equals('1280x720'));
+  });
+
+  testWidgets('PlayerDialogs.showAudioSelector dismisses modal and calls onSelected without popping parent screen', (WidgetTester tester) async {
+    AudioTrack? selected;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkTheme,
+        home: Builder(
+          builder: (context) {
+            return Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () {
+                    PlayerDialogs.showAudioSelector(
+                      context: context,
+                      selected: AudioTrack.defaults[0],
+                      tracks: AudioTrack.defaults,
+                      onSelected: (trk) {
+                        selected = trk;
+                      },
+                    );
+                  },
+                  child: const Text('Open Audio Sheet'),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open Audio Sheet'));
+    await tester.pumpAndSettle();
+
+    // Verify modal sheet is open
+    expect(find.text('Audio & Multi-Language Track'), findsOneWidget);
+    expect(find.text('English (5.1 Surround)'), findsOneWidget);
+
+    // Tap English
+    await tester.tap(find.text('English (5.1 Surround)'));
+    await tester.pumpAndSettle();
+
+    // Modal sheet must be dismissed
+    expect(find.text('Audio & Multi-Language Track'), findsNothing);
+    // Parent screen must still be intact
+    expect(find.text('Open Audio Sheet'), findsOneWidget);
+    // onSelected must receive English
+    expect(selected, isNotNull);
+    expect(selected!.code, equals('eng'));
   });
 }
 
